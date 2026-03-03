@@ -220,7 +220,16 @@ async function handleMessage(msg) {
     if (!Number.isFinite(hours) || hours <= 0) hours = 2;
 
     const { inviteLink } = await openTemporal(hours);
-    return send(chatId, `Temporal ABIERTO\nLink para entrar: ${inviteLink}\nDuración: ${hours}h`);
+
+// si existe canal HUB, publicamos el link allí también
+if (HUB_CHAT_ID) {
+  await send(
+    HUB_CHAT_ID,
+    ⏳ TEMPORAL ABIERTO por ${hours}h\n\n✅ Entra aquí:\n${inviteLink}\n\n⭐ VIP 24/7 escribe /vip al bot
+  );
+}
+
+return send(chatId, Temporal ABIERTO\nLink para entrar: ${inviteLink}\nDuración: ${hours}h);
   }
 
   // ADMIN: /cerrar_temporal
