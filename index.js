@@ -6,16 +6,27 @@ const app = express();
 app.use(express.json());
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
-const BOT_USERNAME = (process.env.BOT_USERNAME || "").replace("@", "").trim(); // NUEVO
+const BOT_USERNAME = (process.env.BOT_USERNAME || "").replace("@", "").trim();
+
+// NUEVO: variables de precios / texto
+const VIP_PRICE_STARS = String(process.env.VIP_PRICE_STARS || "275");
+const VIP_PRICE_USDT = String(process.env.VIP_PRICE_USDT || "5");
+const VIP_PAY_USDT_TEXT = String(
+  process.env.VIP_PAY_USDT_TEXT ||
+    "Metodo: USDT\nRed: TRC20\nDireccion: TU_DIRECCION\n\nLuego toque Ya pague"
+);
+
 const ADMIN_ID = Number(process.env.ADMIN_ID);
 const VIP_CHAT_ID = Number(process.env.VIP_CHAT_ID);
 const TEMP_CHAT_ID = Number(process.env.TEMP_CHAT_ID);
 const HUB_CHAT_ID = process.env.HUB_CHAT_ID ? Number(process.env.HUB_CHAT_ID) : null;
-const WEBHOOK_URL = process.env.WEBHOOK_URL; // ejemplo: https://tuapp.onrender.com
+const WEBHOOK_URL = process.env.WEBHOOK_URL;
 const PORT = process.env.PORT || 3000;
 
 if (!BOT_TOKEN || !ADMIN_ID || !VIP_CHAT_ID || !TEMP_CHAT_ID) {
-  console.error("FALTAN VARIABLES DE ENTORNO: BOT_TOKEN, ADMIN_ID, VIP_CHAT_ID, TEMP_CHAT_ID");
+  console.error(
+    "FALTAN VARIABLES DE ENTORNO: BOT_TOKEN, ADMIN_ID, VIP_CHAT_ID, TEMP_CHAT_ID"
+  );
   process.exit(1);
 }
 
@@ -55,6 +66,16 @@ async function send(chatId, text, extra = {}) {
   return tg("sendMessage", { chat_id: chatId, text, ...extra });
 }
 
+function vipMenuMarkup(includeBack = false) {
+  const rows = [
+    [{ text: `Pagar con Stars (${VIP_PRICE_STARS})`, callback_data: "vip_stars" }],
+    [{ text: `Pagar con USDT (${VIP_PRICE_USDT})`, callback_data: "vip_usdt" }],
+    [{ text: "Ya pague", callback_data: "vip_yapague" }]
+  ];
+  if (includeBack) rows.push([{ text: "Volver", callback_data: "back_home" }]);
+  return { reply_markup: { inline_keyboard: rows } };
+}
+
 async function createInviteLink(chatId, seconds, memberLimit = null) {
   const expireDate = Math.floor(Date.now() / 1000) + seconds;
 
@@ -63,7 +84,6 @@ async function createInviteLink(chatId, seconds, memberLimit = null) {
     expire_date: expireDate
   };
 
-  // solo ponemos member_limit si nos lo pasan
   if (memberLimit !== null) payload.member_limit = memberLimit;
 
   return tg("createChatInviteLink", payload);
@@ -86,7 +106,6 @@ async function openTemporal(hours) {
   const db = loadDB();
   const seconds = Math.max(1, Math.floor(hours * 3600));
 
-  // crea link para entrar durante N horas (ilimitado)
   const linkObj = await createInviteLink(TEMP_CHAT_ID, seconds);
   const openUntil = Date.now() + seconds * 1000;
 
@@ -95,7 +114,6 @@ async function openTemporal(hours) {
   db.temp.postedMessageIds = [];
   saveDB(db);
 
-  // aquí el bot PUBLICA el pack temporal (por ahora 3 mensajes ejemplo)
   const m1 = await tg("sendMessage", {
     chat_id: TEMP_CHAT_ID,
     text: "Canal TEMPORAL abierto por tiempo limitado"
@@ -118,14 +136,12 @@ async function openTemporal(hours) {
 async function closeTemporal() {
   const db = loadDB();
 
-  // revoca link si existe
   if (db.temp.inviteLink) {
     try {
       await revokeInvite(TEMP_CHAT_ID, db.temp.inviteLink);
     } catch {}
   }
 
-  // borra mensajes que el bot publicó
   for (const mid of db.temp.postedMessageIds || []) {
     try {
       await tg("deleteMessage", { chat_id: TEMP_CHAT_ID, message_id: mid });
@@ -153,7 +169,6 @@ async function approveVip(userId, days) {
   db.vipMembers[String(userId)] = { expiresAt };
   saveDB(db);
 
-  // link personal 10 min, 1 uso
   const linkObj = await createInviteLink(VIP_CHAT_ID, 10 * 60, 1);
 
   return { inviteLink: linkObj.invite_link, expiresAt };
@@ -183,6 +198,50 @@ function fmtMs(ms) {
   return `${h}h ${m}m`;
 }
 
+// NUEVO: botones (callback_query)
+async function handleCallbackQuery(cb) {
+  const chatId = cb.message?.chat?.id;
+  const userId = cb.from?.id;
+  const data = cb.data || "";
+
+  try {
+    await tg("answerCallbackQuery", { callback_query_id: cb.id });
+  } catch {}
+
+  if (!chatId || !userId) return;
+
+  if (data === "vip_stars") {
+    return send(
+      chatId,
+      `Pago con Stars\n\nPrecio: ${VIP_PRICE_STARS} Stars\n\nCuando pague, toque "Ya pague" o escriba /ya_pague`,
+      vipMenuMarkup(true)
+    );
+  }
+
+  if (data === "vip_usdt") {
+    return send(
+      chatId,
+      `Pago con USDT\n\nPrecio: ${VIP_PRICE_USDT} USDT\n\n${VIP_PAY_USDT_TEXT}\n\nLuego toque "Ya pague" o escriba /ya_pague`,
+      vipMenuMarkup(true)
+    );
+  }
+
+  if (data === "vip_yapague") {
+    await send(
+      ADMIN_ID,
+      `Pago reportado\nUser: ${userId}\nChat: ${chatId}\nUse: /aprobar ${userId} 30  (o 60 etc)`
+    );
+    return send(chatId, "Listo ya avise al administrador\napenas apruebe le llegara su link VIP");
+  }
+
+  if (data === "back_home") {
+    return send(
+      chatId,
+      "Bienvenido\n\nOpciones:\n/temporal (ver estado)\n/vip (info VIP)\n\nSi ya pago: /ya_pague"
+    );
+  }
+}
+
 /**
  * COMANDOS
  */
@@ -191,16 +250,13 @@ async function handleMessage(msg) {
   const userId = msg.from?.id;
   const text = (msg.text || "").trim();
 
-  // NUEVO: detecta /start con parametro (ej: /start vip)
+  // /start con parametro (ej: /start vip)
   if (text.startsWith("/start")) {
     const parts = text.split(/\s+/);
     const arg = (parts[1] || "").toLowerCase();
 
     if (arg === "vip") {
-      return send(
-        chatId,
-        "VIP mensual\n\nPague y luego escriba /ya_pague\nEl admin revisa y si esta correcto aprueba y le llega su link personal (10 min)"
-      );
+      return send(chatId, "VIP mensual\n\nElija un metodo de pago:", vipMenuMarkup(false));
     }
 
     return send(
@@ -211,12 +267,9 @@ async function handleMessage(msg) {
 
   if (!text.startsWith("/")) return;
 
-  // /vip
+  // /vip -> abre menu
   if (text === "/vip") {
-    return send(
-      chatId,
-      "VIP mensual\n\nPague y luego escriba /ya_pague\nEl admin revisa y si esta correcto aprueba y le llega su link personal (10 min)"
-    );
+    return send(chatId, "VIP mensual\n\nElija un metodo de pago:", vipMenuMarkup(true));
   }
 
   // /ya_pague
@@ -255,7 +308,7 @@ async function handleMessage(msg) {
 
     const { inviteLink } = await openTemporal(hours);
 
-    // si existe canal HUB, publicamos el link alli tambien con boton
+    // Publicar en HUB con boton
     if (HUB_CHAT_ID) {
       const botUrl = BOT_USERNAME ? `https://t.me/${BOT_USERNAME}?start=vip` : null;
 
@@ -274,7 +327,6 @@ async function handleMessage(msg) {
           }
         );
       } else {
-        // fallback si BOT_USERNAME no esta configurado
         await send(
           HUB_CHAT_ID,
           "TEMPORAL ABIERTO por " +
@@ -311,7 +363,6 @@ async function handleMessage(msg) {
 
     const { inviteLink, expiresAt } = await approveVip(targetId, days);
 
-    // manda link al usuario
     await send(targetId, `VIP aprobado por ${days} dias\nLink personal (10 min): ${inviteLink}`);
     return send(chatId, `Aprobado ${targetId}\nVence: ${new Date(expiresAt).toLocaleString()}`);
   }
@@ -337,6 +388,7 @@ app.post(`/webhook/${BOT_TOKEN}`, async (req, res) => {
   try {
     const update = req.body;
     if (update.message) await handleMessage(update.message);
+    if (update.callback_query) await handleCallbackQuery(update.callback_query);
     res.sendStatus(200);
   } catch (e) {
     console.error(e);
@@ -349,12 +401,10 @@ app.get("/", (req, res) => res.send("OK"));
 app.listen(PORT, async () => {
   console.log("Server running on", PORT);
 
-  // revisar expiraciones VIP cada 5 minutos
   setInterval(() => {
     checkVipExpirations().catch(console.error);
   }, 5 * 60 * 1000);
 
-  // cerrar temporal automáticamente si ya pasó (cada 1 minuto)
   setInterval(async () => {
     const db = loadDB();
     if (db.temp.openUntil && db.temp.openUntil <= Date.now()) {
@@ -362,7 +412,6 @@ app.listen(PORT, async () => {
     }
   }, 60 * 1000);
 
-  // set webhook si hay URL
   if (WEBHOOK_URL) {
     const url = `${WEBHOOK_URL}/webhook/${BOT_TOKEN}`;
     try {
