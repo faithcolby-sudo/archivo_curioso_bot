@@ -53,13 +53,18 @@ async function send(chatId, text, extra = {}) {
   return tg("sendMessage", { chat_id: chatId, text, ...extra });
 }
 
-async function createInviteLink(chatId, seconds, memberLimit = 1) {
+async function createInviteLink(chatId, seconds, memberLimit = null) {
   const expireDate = Math.floor(Date.now() / 1000) + seconds;
-  return tg("createChatInviteLink", {
+
+  const payload = {
     chat_id: chatId,
-    expire_date: expireDate,
-    member_limit: memberLimit
-  });
+    expire_date: expireDate
+  };
+
+  // solo ponemos member_limit si nos lo pasan
+  if (memberLimit !== null) payload.member_limit = memberLimit;
+
+  return tg("createChatInviteLink", payload);
 }
 
 async function revokeInvite(chatId, inviteLink) {
@@ -80,7 +85,7 @@ async function openTemporal(hours) {
   const seconds = Math.max(1, Math.floor(hours * 3600));
 
   // crea link para entrar durante N horas (sirve para nuevos)
-  const linkObj = await createInviteLink(TEMP_CHAT_ID, seconds, 999999); // mucha gente puede entrar
+  const linkObj = await createInviteLink(TEMP_CHAT_ID, seconds, ); // mucha gente puede entrar
   const openUntil = Date.now() + seconds * 1000;
 
   db.temp.openUntil = openUntil;
