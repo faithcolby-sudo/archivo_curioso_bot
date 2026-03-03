@@ -597,13 +597,7 @@ async function handleMessage(msg) {
     const days = Number(parts[2] || 30);
     if (!targetId || !Number.isFinite(days) || days <= 0) {
       return send(chatId, "Uso: /aprobar USER_ID 30");
-      // 🔥 NUEVO: POST FIJO EN CANAL PUBLICO
-  if (text === "/post_fijo") {
-    if (!isAdmin(userId)) return send(chatId, "No autorizado");
 
-    if (!HUB_CHAT_ID) {
-      return send(chatId, "HUB_CHAT_ID no configurado en Render");
-    }
 
     if (!BOT_USERNAME) {
       return send(chatId, "BOT_USERNAME no configurado en Render");
