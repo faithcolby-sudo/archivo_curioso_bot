@@ -6,6 +6,7 @@ const app = express();
 app.use(express.json());
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
+const BOT_USERNAME = (process.env.BOT_USERNAME || "").replace("@", "").trim(); // NUEVO
 const ADMIN_ID = Number(process.env.ADMIN_ID);
 const VIP_CHAT_ID = Number(process.env.VIP_CHAT_ID);
 const TEMP_CHAT_ID = Number(process.env.TEMP_CHAT_ID);
@@ -190,15 +191,25 @@ async function handleMessage(msg) {
   const userId = msg.from?.id;
   const text = (msg.text || "").trim();
 
-  if (!text.startsWith("/")) return;
+  // NUEVO: detecta /start con parametro (ej: /start vip)
+  if (text.startsWith("/start")) {
+    const parts = text.split(/\s+/);
+    const arg = (parts[1] || "").toLowerCase();
 
-  // /start
-  if (text === "/start") {
+    if (arg === "vip") {
+      return send(
+        chatId,
+        "VIP mensual\n\nPague y luego escriba /ya_pague\nEl admin revisa y si esta correcto aprueba y le llega su link personal (10 min)"
+      );
+    }
+
     return send(
       chatId,
       "Bienvenido\n\nOpciones:\n/temporal (ver estado)\n/vip (info VIP)\n\nSi ya pago: /ya_pague"
     );
   }
+
+  if (!text.startsWith("/")) return;
 
   // /vip
   if (text === "/vip") {
@@ -244,16 +255,35 @@ async function handleMessage(msg) {
 
     const { inviteLink } = await openTemporal(hours);
 
-    // si existe canal HUB, publicamos el link alli tambien
+    // si existe canal HUB, publicamos el link alli tambien con boton
     if (HUB_CHAT_ID) {
-      await send(
-        HUB_CHAT_ID,
-        "TEMPORAL ABIERTO por " +
-          hours +
-          "h\n\nEntra aqui:\n" +
-          inviteLink +
-          "\n\nVIP 24/7: escribe /vip al bot"
-      );
+      const botUrl = BOT_USERNAME ? `https://t.me/${BOT_USERNAME}?start=vip` : null;
+
+      if (botUrl) {
+        await send(
+          HUB_CHAT_ID,
+          "TEMPORAL ABIERTO por " +
+            hours +
+            "h\n\nEntra aqui:\n" +
+            inviteLink +
+            "\n\nVIP 24/7: toca el boton",
+          {
+            reply_markup: {
+              inline_keyboard: [[{ text: "Desbloquear acceso VIP 🔒", url: botUrl }]]
+            }
+          }
+        );
+      } else {
+        // fallback si BOT_USERNAME no esta configurado
+        await send(
+          HUB_CHAT_ID,
+          "TEMPORAL ABIERTO por " +
+            hours +
+            "h\n\nEntra aqui:\n" +
+            inviteLink +
+            "\n\nVIP 24/7: escriba /vip al bot"
+        );
+      }
     }
 
     return send(
