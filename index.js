@@ -612,3 +612,58 @@ async function handleMessage(msg) {
     const db = loadDB();
     const info = db.vipMembers[targetId];
     if (!info) return send(chatId, "No esta en VIP");
+    const left = info.expiresAt - Date.now();
+    return send(chatId, `VIP activo\nFaltan: ${fmtMs(left)}\nVence: ${new Date(info.expiresAt).toLocaleString()}`);
+  }
+}
+
+// WEBHOOK endpoint
+app.post(`/webhook/${BOT_TOKEN}`, async (req, res) => {
+  try {
+    const update = req.body;
+
+    if (update.message) await handleMessage(update.message);
+    if (update.edited_message) await handleMessage(update.edited_message);
+
+    if (update.callback_query) await handleCallbackQuery(update.callback_query);
+    if (update.pre_checkout_query) await handlePreCheckoutQuery(update.pre_checkout_query);
+
+    res.sendStatus(200);
+  } catch (e) {
+    console.error(e);
+    try { await notifyAdmin(`❌ ERROR webhook: ${e?.message || e}`); } catch {}
+    res.sendStatus(200);
+  }
+});
+
+app.get("/", (req, res) => res.send("OK"));
+
+app.listen(PORT, async () => {
+  console.log("Server running on", PORT);
+
+  setInterval(() => {
+    checkVipExpirations().catch(console.error);
+  }, 5 * 60 * 1000);
+
+  setInterval(async () => {
+    const db = loadDB();
+    if (db.temp.openUntil && db.temp.openUntil <= Date.now()) {
+      await closeTemporal().catch(console.error);
+    }
+  }, 60 * 1000);
+
+  if (WEBHOOK_URL) {
+    const url = `${WEBHOOK_URL}/webhook/${BOT_TOKEN}`;
+    try {
+      await tg("setWebhook", { url });
+      console.log("Webhook set:", url);
+      await notifyAdmin(`Webhook OK ✅\n${url}`);
+    } catch (e) {
+      console.error("Failed to setWebhook:", e.message);
+      await notifyAdmin(`❌ Failed setWebhook: ${e?.message || e}`);
+    }
+  } else {
+    console.log("WEBHOOK_URL no configurado (luego lo pone en Render)");
+    await notifyAdmin("⚠️ WEBHOOK_URL no configurado en Render");
+  }
+});
