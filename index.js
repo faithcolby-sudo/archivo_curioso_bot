@@ -26,7 +26,7 @@ function loadDB() {
     return JSON.parse(fs.readFileSync(DB_FILE, "utf8"));
   } catch {
     return {
-      vipMembers: {},      // userId: { expiresAt: ms }
+      vipMembers: {}, // userId: { expiresAt: ms }
       temp: { openUntil: 0, inviteLink: "", postedMessageIds: [] }
     };
   }
@@ -85,8 +85,8 @@ async function openTemporal(hours) {
   const db = loadDB();
   const seconds = Math.max(1, Math.floor(hours * 3600));
 
-  // crea link para entrar durante N horas (sirve para nuevos)
-  const linkObj = await createInviteLink(TEMP_CHAT_ID, seconds, ); // mucha gente puede entrar
+  // crea link para entrar durante N horas (ilimitado)
+  const linkObj = await createInviteLink(TEMP_CHAT_ID, seconds);
   const openUntil = Date.now() + seconds * 1000;
 
   db.temp.openUntil = openUntil;
@@ -95,9 +95,18 @@ async function openTemporal(hours) {
   saveDB(db);
 
   // aquí el bot PUBLICA el pack temporal (por ahora 3 mensajes ejemplo)
-  const m1 = await tg("sendMessage", { chat_id: TEMP_CHAT_ID, text: "⏳ Canal TEMPORAL abierto por tiempo limitado" });
-  const m2 = await tg("sendMessage", { chat_id: TEMP_CHAT_ID, text: "🔥 Muestra 1 (aquí luego pondremos su contenido)" });
-  const m3 = await tg("sendMessage", { chat_id: TEMP_CHAT_ID, text: "⭐ Para VIP escriba al bot: /vip" });
+  const m1 = await tg("sendMessage", {
+    chat_id: TEMP_CHAT_ID,
+    text: "Canal TEMPORAL abierto por tiempo limitado"
+  });
+  const m2 = await tg("sendMessage", {
+    chat_id: TEMP_CHAT_ID,
+    text: "Muestra 1 (aqui luego pondremos su contenido)"
+  });
+  const m3 = await tg("sendMessage", {
+    chat_id: TEMP_CHAT_ID,
+    text: "Para VIP escriba al bot: /vip"
+  });
 
   db.temp.postedMessageIds = [m1.message_id, m2.message_id, m3.message_id];
   saveDB(db);
@@ -110,12 +119,16 @@ async function closeTemporal() {
 
   // revoca link si existe
   if (db.temp.inviteLink) {
-    try { await revokeInvite(TEMP_CHAT_ID, db.temp.inviteLink); } catch {}
+    try {
+      await revokeInvite(TEMP_CHAT_ID, db.temp.inviteLink);
+    } catch {}
   }
 
   // borra mensajes que el bot publicó
   for (const mid of db.temp.postedMessageIds || []) {
-    try { await tg("deleteMessage", { chat_id: TEMP_CHAT_ID, message_id: mid }); } catch {}
+    try {
+      await tg("deleteMessage", { chat_id: TEMP_CHAT_ID, message_id: mid });
+    } catch {}
   }
 
   db.temp = { openUntil: 0, inviteLink: "", postedMessageIds: [] };
@@ -153,7 +166,9 @@ async function checkVipExpirations() {
   for (const [userIdStr, info] of entries) {
     if (info.expiresAt && info.expiresAt <= now) {
       const userId = Number(userIdStr);
-      try { await kickUser(VIP_CHAT_ID, userId); } catch {}
+      try {
+        await kickUser(VIP_CHAT_ID, userId);
+      } catch {}
       delete db.vipMembers[userIdStr];
     }
   }
@@ -179,29 +194,37 @@ async function handleMessage(msg) {
 
   // /start
   if (text === "/start") {
-    return send(chatId,
-      "Bienvenido\n\nOpciones:\n/temporal (ver estado)\n/vip (info VIP)\n\nSi ya pagó: /ya_pague"
+    return send(
+      chatId,
+      "Bienvenido\n\nOpciones:\n/temporal (ver estado)\n/vip (info VIP)\n\nSi ya pago: /ya_pague"
     );
   }
 
   // /vip
   if (text === "/vip") {
-    return send(chatId,
-      "VIP mensual\n\nPague y luego escriba /ya_pague\nEl admin revisa y si está correcto aprueba y le llega su link personal (10 min)"
+    return send(
+      chatId,
+      "VIP mensual\n\nPague y luego escriba /ya_pague\nEl admin revisa y si esta correcto aprueba y le llega su link personal (10 min)"
     );
   }
 
   // /ya_pague
   if (text === "/ya_pague") {
-    await send(ADMIN_ID, `Pago reportado\nUser: ${userId}\nChat: ${chatId}\nUse: /aprobar ${userId} 30  (o 60 etc)`);
-    return send(chatId, "Listo ya avisé al administrador\napenas apruebe le llegará su link VIP");
+    await send(
+      ADMIN_ID,
+      `Pago reportado\nUser: ${userId}\nChat: ${chatId}\nUse: /aprobar ${userId} 30  (o 60 etc)`
+    );
+    return send(chatId, "Listo ya avise al administrador\napenas apruebe le llegara su link VIP");
   }
 
   // /temporal
   if (text === "/temporal") {
     const db = loadDB();
     if (db.temp.openUntil && db.temp.openUntil > Date.now()) {
-      return send(chatId, `Temporal ABIERTO\nLink: ${db.temp.inviteLink}\nCierra en: ${fmtMs(db.temp.openUntil - Date.now())}`);
+      return send(
+        chatId,
+        `Temporal ABIERTO\nLink: ${db.temp.inviteLink}\nCierra en: ${fmtMs(db.temp.openUntil - Date.now())}`
+      );
     }
     return send(chatId, "Temporal CERRADO\nEspere que el admin lo abra");
   }
@@ -221,15 +244,22 @@ async function handleMessage(msg) {
 
     const { inviteLink } = await openTemporal(hours);
 
-// si existe canal HUB, publicamos el link allí también
-if (HUB_CHAT_ID) {
-  await send(
-    HUB_CHAT_ID,
-    ⏳ TEMPORAL ABIERTO por ${hours}h\n\n✅ Entra aquí:\n${inviteLink}\n\n⭐ VIP 24/7 escribe /vip al bot
-  );
-}
+    // si existe canal HUB, publicamos el link alli tambien
+    if (HUB_CHAT_ID) {
+      await send(
+        HUB_CHAT_ID,
+        "TEMPORAL ABIERTO por " +
+          hours +
+          "h\n\nEntra aqui:\n" +
+          inviteLink +
+          "\n\nVIP 24/7: escribe /vip al bot"
+      );
+    }
 
-return send(chatId, Temporal ABIERTO\nLink para entrar: ${inviteLink}\nDuración: ${hours}h);
+    return send(
+      chatId,
+      "Temporal ABIERTO\nLink para entrar:\n" + inviteLink + "\nDuracion: " + hours + "h"
+    );
   }
 
   // ADMIN: /cerrar_temporal
@@ -252,7 +282,7 @@ return send(chatId, Temporal ABIERTO\nLink para entrar: ${inviteLink}\nDuración
     const { inviteLink, expiresAt } = await approveVip(targetId, days);
 
     // manda link al usuario
-    await send(targetId, `VIP aprobado por ${days} días\nLink personal (10 min): ${inviteLink}`);
+    await send(targetId, `VIP aprobado por ${days} dias\nLink personal (10 min): ${inviteLink}`);
     return send(chatId, `Aprobado ${targetId}\nVence: ${new Date(expiresAt).toLocaleString()}`);
   }
 
@@ -263,9 +293,12 @@ return send(chatId, Temporal ABIERTO\nLink para entrar: ${inviteLink}\nDuración
     const targetId = String(parts[1] || "");
     const db = loadDB();
     const info = db.vipMembers[targetId];
-    if (!info) return send(chatId, "No está en VIP");
+    if (!info) return send(chatId, "No esta en VIP");
     const left = info.expiresAt - Date.now();
-    return send(chatId, `VIP activo\nFaltan: ${fmtMs(left)}\nVence: ${new Date(info.expiresAt).toLocaleString()}`);
+    return send(
+      chatId,
+      `VIP activo\nFaltan: ${fmtMs(left)}\nVence: ${new Date(info.expiresAt).toLocaleString()}`
+    );
   }
 }
 
