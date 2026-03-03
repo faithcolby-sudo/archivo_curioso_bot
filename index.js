@@ -31,18 +31,68 @@ if (!BOT_TOKEN || !ADMIN_ID || !VIP_CHAT_ID || !TEMP_CHAT_ID) {
 const API = `https://api.telegram.org/bot${BOT_TOKEN}`;
 const DB_FILE = "./db.json";
 
+/**
+ * ✅ ARREGLO CLAVE:
+ * su db.json viejo tenia solo vipMembers/temp y NO tenia paidStars/lastVipLink
+ * entonces al pagar Stars el codigo se caia y no mandaba link
+ * este loadDB "cura" el db aunque venga incompleto y lo guarda ya arreglado
+ */
 function loadDB() {
+  let db = {};
+  let changed = false;
+
   try {
-    return JSON.parse(fs.readFileSync(DB_FILE, "utf8"));
+    db = JSON.parse(fs.readFileSync(DB_FILE, "utf8"));
+    if (!db || typeof db !== "object") {
+      db = {};
+      changed = true;
+    }
   } catch {
-    return {
-      vipMembers: {}, // userId: { expiresAt: ms }
-      temp: { openUntil: 0, inviteLink: "", postedMessageIds: [] },
-      paidStars: {}, // telegram_payment_charge_id: true (anti duplicado)
-      lastVipLink: {} // userId: { inviteLink, createdAt }
-    };
+    db = {};
+    changed = true;
   }
+
+  if (!db.vipMembers || typeof db.vipMembers !== "object") {
+    db.vipMembers = {};
+    changed = true;
+  }
+
+  if (!db.temp || typeof db.temp !== "object") {
+    db.temp = { openUntil: 0, inviteLink: "", postedMessageIds: [] };
+    changed = true;
+  }
+  if (typeof db.temp.openUntil !== "number") {
+    db.temp.openUntil = 0;
+    changed = true;
+  }
+  if (typeof db.temp.inviteLink !== "string") {
+    db.temp.inviteLink = "";
+    changed = true;
+  }
+  if (!Array.isArray(db.temp.postedMessageIds)) {
+    db.temp.postedMessageIds = [];
+    changed = true;
+  }
+
+  if (!db.paidStars || typeof db.paidStars !== "object") {
+    db.paidStars = {};
+    changed = true;
+  }
+
+  if (!db.lastVipLink || typeof db.lastVipLink !== "object") {
+    db.lastVipLink = {};
+    changed = true;
+  }
+
+  if (changed) {
+    try {
+      fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2));
+    } catch {}
+  }
+
+  return db;
 }
+
 function saveDB(db) {
   fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2));
 }
@@ -138,18 +188,9 @@ async function openTemporal(hours) {
   db.temp.postedMessageIds = [];
   saveDB(db);
 
-  const m1 = await tg("sendMessage", {
-    chat_id: TEMP_CHAT_ID,
-    text: "Canal TEMPORAL abierto por tiempo limitado"
-  });
-  const m2 = await tg("sendMessage", {
-    chat_id: TEMP_CHAT_ID,
-    text: "Muestra 1 (aqui luego pondremos su contenido)"
-  });
-  const m3 = await tg("sendMessage", {
-    chat_id: TEMP_CHAT_ID,
-    text: "Para VIP escriba al bot: /vip"
-  });
+  const m1 = await tg("sendMessage", { chat_id: TEMP_CHAT_ID, text: "Canal TEMPORAL abierto por tiempo limitado" });
+  const m2 = await tg("sendMessage", { chat_id: TEMP_CHAT_ID, text: "Muestra 1 (aqui luego pondremos su contenido)" });
+  const m3 = await tg("sendMessage", { chat_id: TEMP_CHAT_ID, text: "Para VIP escriba al bot: /vip" });
 
   db.temp.postedMessageIds = [m1.message_id, m2.message_id, m3.message_id];
   saveDB(db);
@@ -189,10 +230,8 @@ async function approveVip(userId, days) {
   db.vipMembers[String(userId)] = { expiresAt };
   saveDB(db);
 
-  // link personal 10 min, 1 uso
   const linkObj = await createInviteLink(VIP_CHAT_ID, 10 * 60, 1);
 
-  // guarda ultimo link (por si quieres)
   db.lastVipLink[String(userId)] = { inviteLink: linkObj.invite_link, createdAt: Date.now() };
   saveDB(db);
 
@@ -228,7 +267,6 @@ async function handleCallbackQuery(cb) {
   const data = cb.data || "";
 
   try { await tg("answerCallbackQuery", { callback_query_id: cb.id }); } catch {}
-
   if (!chatId || !userId) return;
 
   if (data === "vip_stars") {
@@ -245,18 +283,12 @@ async function handleCallbackQuery(cb) {
   }
 
   if (data === "vip_yapague") {
-    await send(
-      ADMIN_ID,
-      `Pago reportado\nUser: ${userId}\nChat: ${chatId}\nUse: /aprobar ${userId} 30`
-    );
+    await send(ADMIN_ID, `Pago reportado\nUser: ${userId}\nChat: ${chatId}\nUse: /aprobar ${userId} 30`);
     return send(chatId, "Listo ya avise al administrador\napenas apruebe le llegara su link VIP");
   }
 
   if (data === "back_home") {
-    return send(
-      chatId,
-      "Bienvenido\n\nOpciones:\n/temporal (ver estado)\n/vip (info VIP)\n\nSi ya pago: /ya_pague"
-    );
+    return send(chatId, "Bienvenido\n\nOpciones:\n/temporal (ver estado)\n/vip (info VIP)\n/mi_vip (reenvia link si ya tiene VIP)\n\nSi ya pago: /ya_pague");
   }
 }
 
@@ -293,7 +325,6 @@ async function handleSuccessfulPayment(msg) {
     `SuccessfulPayment recibido ✅\nUser: ${userId}\nMonto: ${sp.total_amount} ${sp.currency}\nCharge: ${sp.telegram_payment_charge_id}\nPayload:\n${sp.invoice_payload}`
   );
 
-  // valida Stars + monto + payload nuestro
   if (sp.currency !== "XTR" || Number(sp.total_amount) !== expected) {
     await notifyAdmin("⚠️ Ignorado: currency/monto no coincide con VIP_PRICE_STARS");
     return;
@@ -305,6 +336,7 @@ async function handleSuccessfulPayment(msg) {
 
   const db = loadDB();
   const chargeId = sp.telegram_payment_charge_id || "";
+
   if (chargeId && db.paidStars[chargeId]) {
     await notifyAdmin("⚠️ Ignorado: pago duplicado (charge ya procesado)");
     return;
@@ -315,18 +347,19 @@ async function handleSuccessfulPayment(msg) {
     saveDB(db);
   }
 
-  // activar VIP (30 días)
   try {
     const { inviteLink, expiresAt } = await approveVip(userId, 30);
 
-    await send(chatId, `Pago recibido ✅\nVIP activado 30 dias\n\nLink personal (10 min): ${inviteLink}\n\nSi se le vence el link, escriba /mi_vip`);
+    await send(
+      chatId,
+      `Pago recibido ✅\nVIP activado 30 dias\n\nLink personal (10 min): ${inviteLink}\n\nSi se le vence el link, escriba /mi_vip`
+    );
+
     await notifyAdmin(
       `VIP activado ✅\nUser: ${userId}\nVence: ${new Date(expiresAt).toLocaleString()}\nLink:\n${inviteLink}`
     );
   } catch (e) {
     await notifyAdmin(`❌ ERROR activando VIP\nUser: ${userId}\nError: ${e?.message || e}`);
-
-    // al usuario le avisamos para que intente recuperar luego
     try {
       await send(chatId, "Pago recibido ✅\nPero hubo un error activando el VIP\nEscriba /mi_vip en 1 minuto\nSi no sale, escriba /ya_pague");
     } catch {}
@@ -340,17 +373,16 @@ async function handleMessage(msg) {
   const chatId = msg.chat?.id;
   const userId = msg.from?.id;
   const text = (msg.text || "").trim();
-
   if (!chatId || !userId) return;
 
-  // si llega successful_payment aquí, procesamos
+  // Stars payment cae como message.successful_payment
   if (msg.successful_payment) {
     return handleSuccessfulPayment(msg).catch(async (e) => {
       await notifyAdmin(`❌ ERROR handleSuccessfulPayment: ${e?.message || e}`);
     });
   }
 
-  // /start con parametro (ej: /start vip)
+  // /start con parametro
   if (text.startsWith("/start")) {
     const parts = text.split(/\s+/);
     const arg = (parts[1] || "").toLowerCase();
@@ -367,12 +399,10 @@ async function handleMessage(msg) {
 
   if (!text.startsWith("/")) return;
 
-  // /vip -> menu
   if (text === "/vip") {
     return send(chatId, "VIP mensual\n\nElija un metodo de pago:", vipMenuMarkup(true));
   }
 
-  // /mi_vip -> genera link nuevo si tiene VIP activo
   if (text === "/mi_vip") {
     const db = loadDB();
     const info = db.vipMembers[String(userId)];
@@ -390,13 +420,11 @@ async function handleMessage(msg) {
     }
   }
 
-  // /ya_pague (manual USDT)
   if (text === "/ya_pague") {
     await send(ADMIN_ID, `Pago reportado\nUser: ${userId}\nChat: ${chatId}\nUse: /aprobar ${userId} 30`);
     return send(chatId, "Listo ya avise al administrador\napenas apruebe le llegara su link VIP");
   }
 
-  // /temporal
   if (text === "/temporal") {
     const db = loadDB();
     if (db.temp.openUntil && db.temp.openUntil > Date.now()) {
@@ -405,7 +433,6 @@ async function handleMessage(msg) {
     return send(chatId, "Temporal CERRADO\nEspere que el admin lo abra");
   }
 
-  // ADMIN: /abrir_temporal 2h
   if (text.startsWith("/abrir_temporal")) {
     if (!isAdmin(userId)) return send(chatId, "No autorizado");
     const parts = text.split(/\s+/);
@@ -420,32 +447,19 @@ async function handleMessage(msg) {
 
     const { inviteLink } = await openTemporal(hours);
 
-    // Publicar en HUB con boton al bot
     if (HUB_CHAT_ID) {
       const botUrl = BOT_USERNAME ? `https://t.me/${BOT_USERNAME}?start=vip` : null;
 
       if (botUrl) {
         await send(
           HUB_CHAT_ID,
-          "TEMPORAL ABIERTO por " +
-            hours +
-            "h\n\nEntra aqui:\n" +
-            inviteLink +
-            "\n\nVIP 24/7: toca el boton",
-          {
-            reply_markup: {
-              inline_keyboard: [[{ text: "Desbloquear acceso VIP 🔒", url: botUrl }]]
-            }
-          }
+          "TEMPORAL ABIERTO por " + hours + "h\n\nEntra aqui:\n" + inviteLink + "\n\nVIP 24/7: toca el boton",
+          { reply_markup: { inline_keyboard: [[{ text: "Desbloquear acceso VIP 🔒", url: botUrl }]] } }
         );
       } else {
         await send(
           HUB_CHAT_ID,
-          "TEMPORAL ABIERTO por " +
-            hours +
-            "h\n\nEntra aqui:\n" +
-            inviteLink +
-            "\n\nVIP 24/7: escriba /vip al bot"
+          "TEMPORAL ABIERTO por " + hours + "h\n\nEntra aqui:\n" + inviteLink + "\n\nVIP 24/7: escriba /vip al bot"
         );
       }
     }
@@ -453,14 +467,12 @@ async function handleMessage(msg) {
     return send(chatId, "Temporal ABIERTO\nLink para entrar:\n" + inviteLink + "\nDuracion: " + hours + "h");
   }
 
-  // ADMIN: /cerrar_temporal
   if (text === "/cerrar_temporal") {
     if (!isAdmin(userId)) return send(chatId, "No autorizado");
     await closeTemporal();
     return send(chatId, "Temporal cerrado y contenido borrado");
   }
 
-  // ADMIN: /aprobar USER_ID DIAS
   if (text.startsWith("/aprobar")) {
     if (!isAdmin(userId)) return send(chatId, "No autorizado");
     const parts = text.split(/\s+/);
@@ -476,7 +488,6 @@ async function handleMessage(msg) {
     return send(chatId, `Aprobado ${targetId}\nVence: ${new Date(expiresAt).toLocaleString()}`);
   }
 
-  // ADMIN: /estado_vip USER_ID
   if (text.startsWith("/estado_vip")) {
     if (!isAdmin(userId)) return send(chatId, "No autorizado");
     const parts = text.split(/\s+/);
@@ -495,7 +506,7 @@ app.post(`/webhook/${BOT_TOKEN}`, async (req, res) => {
     const update = req.body;
 
     if (update.message) await handleMessage(update.message);
-    if (update.edited_message) await handleMessage(update.edited_message); // NUEVO (por seguridad)
+    if (update.edited_message) await handleMessage(update.edited_message);
 
     if (update.callback_query) await handleCallbackQuery(update.callback_query);
     if (update.pre_checkout_query) await handlePreCheckoutQuery(update.pre_checkout_query);
@@ -503,9 +514,7 @@ app.post(`/webhook/${BOT_TOKEN}`, async (req, res) => {
     res.sendStatus(200);
   } catch (e) {
     console.error(e);
-    try {
-      await notifyAdmin(`❌ ERROR webhook: ${e?.message || e}`);
-    } catch {}
+    try { await notifyAdmin(`❌ ERROR webhook: ${e?.message || e}`); } catch {}
     res.sendStatus(200);
   }
 });
