@@ -9,6 +9,7 @@ const BOT_TOKEN = process.env.BOT_TOKEN;
 const ADMIN_ID = Number(process.env.ADMIN_ID);
 const VIP_CHAT_ID = Number(process.env.VIP_CHAT_ID);
 const TEMP_CHAT_ID = Number(process.env.TEMP_CHAT_ID);
+const HUB_CHAT_ID = process.env.HUB_CHAT_ID ? Number(process.env.HUB_CHAT_ID) : null;
 const WEBHOOK_URL = process.env.WEBHOOK_URL; // ejemplo: https://tuapp.onrender.com
 const PORT = process.env.PORT || 3000;
 
