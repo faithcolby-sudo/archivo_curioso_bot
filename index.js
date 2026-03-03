@@ -38,7 +38,8 @@ function loadDB() {
     return {
       vipMembers: {}, // userId: { expiresAt: ms }
       temp: { openUntil: 0, inviteLink: "", postedMessageIds: [] },
-      paidStars: {} // telegram_payment_charge_id: true (anti duplicado)
+      paidStars: {}, // telegram_payment_charge_id: true (anti duplicado)
+      lastVipLink: {} // userId: { inviteLink, createdAt }
     };
   }
 }
@@ -65,13 +66,10 @@ async function send(chatId, text, extra = {}) {
   return tg("sendMessage", { chat_id: chatId, text, ...extra });
 }
 
-// --- NUEVO: helper para calcular el precio Stars igual en todos lados ---
-function getExpectedStars() {
-  let expected = Number(VIP_PRICE_STARS);
-  if (!Number.isFinite(expected) || expected <= 0) expected = 275;
-  expected = Math.floor(expected);
-  if (expected < 1) expected = 1;
-  return expected;
+async function notifyAdmin(text) {
+  try {
+    await send(ADMIN_ID, text);
+  } catch {}
 }
 
 function vipMenuMarkup(includeBack = false) {
@@ -86,13 +84,19 @@ function vipMenuMarkup(includeBack = false) {
 
 /** STARS: manda invoice (XTR) */
 async function sendStarsInvoice(chatId, userId) {
-  const amountStars = getExpectedStars();
+  let amountStars = Number(VIP_PRICE_STARS);
+  if (!Number.isFinite(amountStars) || amountStars <= 0) amountStars = 275;
+  amountStars = Math.floor(amountStars);
+  if (amountStars < 1) amountStars = 1;
 
-  // payload único (para validar en pre_checkout)
   const payload = `vip30_${userId}_${Date.now()}`;
 
-  // IMPORTANTE: para Stars (XTR) NO se envía provider_token
-  const r = await tg("sendInvoice", {
+  await notifyAdmin(
+    `Invoice Stars enviado ✅\nUser: ${userId}\nChat: ${chatId}\nMonto: ${amountStars} XTR\nPayload:\n${payload}`
+  );
+
+  // Stars: NO provider_token
+  return tg("sendInvoice", {
     chat_id: chatId,
     title: "VIP 30 dias",
     description: "Acceso VIP por 30 dias (renovable).",
@@ -100,13 +104,6 @@ async function sendStarsInvoice(chatId, userId) {
     currency: "XTR",
     prices: [{ label: "VIP 30 dias", amount: amountStars }]
   });
-
-  // debug al admin (para saber que SI se envio invoice)
-  try {
-    await send(ADMIN_ID, `Invoice Stars enviado ✅\nUser: ${userId}\nChat: ${chatId}\nMonto: ${amountStars} XTR\nPayload: ${payload}`);
-  } catch {}
-
-  return r;
 }
 
 async function createInviteLink(chatId, seconds, memberLimit = null) {
@@ -192,7 +189,13 @@ async function approveVip(userId, days) {
   db.vipMembers[String(userId)] = { expiresAt };
   saveDB(db);
 
+  // link personal 10 min, 1 uso
   const linkObj = await createInviteLink(VIP_CHAT_ID, 10 * 60, 1);
+
+  // guarda ultimo link (por si quieres)
+  db.lastVipLink[String(userId)] = { inviteLink: linkObj.invite_link, createdAt: Date.now() };
+  saveDB(db);
+
   return { inviteLink: linkObj.invite_link, expiresAt };
 }
 
@@ -259,7 +262,7 @@ async function handleCallbackQuery(cb) {
 
 /** PRE-CHECKOUT (Stars) */
 async function handlePreCheckoutQuery(q) {
-  const expected = getExpectedStars();
+  const expected = Math.floor(Number(VIP_PRICE_STARS) || 275);
 
   const ok =
     q.currency === "XTR" &&
@@ -267,13 +270,9 @@ async function handlePreCheckoutQuery(q) {
     typeof q.invoice_payload === "string" &&
     q.invoice_payload.startsWith("vip30_");
 
-  // debug al admin (para saber que llego pre_checkout)
-  try {
-    await send(
-      ADMIN_ID,
-      `PreCheckout Stars ${ok ? "OK ✅" : "FAIL ❌"}\nUser: ${q.from?.id}\nMonto: ${q.total_amount} ${q.currency}\nExpected: ${expected}\nPayload: ${q.invoice_payload}`
-    );
-  } catch {}
+  await notifyAdmin(
+    `${ok ? "PreCheckout Stars OK ✅" : "PreCheckout Stars FAIL ❌"}\nUser: ${q.from?.id}\nMonto: ${q.total_amount} ${q.currency}\nExpected: ${expected}\nPayload:\n${q.invoice_payload}`
+  );
 
   const payload = { pre_checkout_query_id: q.id, ok: !!ok };
   if (!ok) payload.error_message = "Pago invalido, intente de nuevo.";
@@ -288,52 +287,49 @@ async function handleSuccessfulPayment(msg) {
   const sp = msg.successful_payment;
   if (!userId || !chatId || !sp) return;
 
-  const expected = getExpectedStars();
+  const expected = Math.floor(Number(VIP_PRICE_STARS) || 275);
+
+  await notifyAdmin(
+    `SuccessfulPayment recibido ✅\nUser: ${userId}\nMonto: ${sp.total_amount} ${sp.currency}\nCharge: ${sp.telegram_payment_charge_id}\nPayload:\n${sp.invoice_payload}`
+  );
 
   // valida Stars + monto + payload nuestro
-  if (sp.currency !== "XTR" || Number(sp.total_amount) !== expected) return;
-  if (!sp.invoice_payload || !String(sp.invoice_payload).startsWith("vip30_")) return;
+  if (sp.currency !== "XTR" || Number(sp.total_amount) !== expected) {
+    await notifyAdmin("⚠️ Ignorado: currency/monto no coincide con VIP_PRICE_STARS");
+    return;
+  }
+  if (!sp.invoice_payload || !String(sp.invoice_payload).startsWith("vip30_")) {
+    await notifyAdmin("⚠️ Ignorado: payload no coincide");
+    return;
+  }
 
   const db = loadDB();
   const chargeId = sp.telegram_payment_charge_id || "";
-
-  // debug al admin (para saber que llego successful_payment)
-  try {
-    await send(
-      ADMIN_ID,
-      `SuccessfulPayment recibido ✅\nUser: ${userId}\nMonto: ${sp.total_amount} ${sp.currency}\nCharge: ${chargeId}\nPayload: ${sp.invoice_payload}`
-    );
-  } catch {}
-
-  // anti-duplicado
-  if (chargeId && db.paidStars[chargeId]) return;
+  if (chargeId && db.paidStars[chargeId]) {
+    await notifyAdmin("⚠️ Ignorado: pago duplicado (charge ya procesado)");
+    return;
+  }
 
   if (chargeId) {
     db.paidStars[chargeId] = true;
     saveDB(db);
   }
 
+  // activar VIP (30 días)
   try {
     const { inviteLink, expiresAt } = await approveVip(userId, 30);
 
-    await send(chatId, `Pago recibido ✅\nVIP activado 30 dias\n\nLink personal (10 min): ${inviteLink}`);
-    await send(
-      ADMIN_ID,
-      `VIP activado ✅\nUser: ${userId}\nVence: ${new Date(expiresAt).toLocaleString()}\nLink: ${inviteLink}`
+    await send(chatId, `Pago recibido ✅\nVIP activado 30 dias\n\nLink personal (10 min): ${inviteLink}\n\nSi se le vence el link, escriba /mi_vip`);
+    await notifyAdmin(
+      `VIP activado ✅\nUser: ${userId}\nVence: ${new Date(expiresAt).toLocaleString()}\nLink:\n${inviteLink}`
     );
   } catch (e) {
-    console.error("Error activando VIP tras pago:", e);
+    await notifyAdmin(`❌ ERROR activando VIP\nUser: ${userId}\nError: ${e?.message || e}`);
 
-    // No dejamos mudo al usuario
-    await send(
-      chatId,
-      "Pago recibido ✅\nPero hubo un problema creando el link del canal VIP\nEscriba /ya_pague para que el admin lo active manualmente."
-    );
-
-    await send(
-      ADMIN_ID,
-      `Pago Stars recibido pero fallo activar VIP ❌\nUser: ${userId}\nChat: ${chatId}\nCharge: ${chargeId}\nError: ${String(e?.message || e)}`
-    );
+    // al usuario le avisamos para que intente recuperar luego
+    try {
+      await send(chatId, "Pago recibido ✅\nPero hubo un error activando el VIP\nEscriba /mi_vip en 1 minuto\nSi no sale, escriba /ya_pague");
+    } catch {}
   }
 }
 
@@ -341,13 +337,17 @@ async function handleSuccessfulPayment(msg) {
  * COMANDOS
  */
 async function handleMessage(msg) {
-  const chatId = msg.chat.id;
+  const chatId = msg.chat?.id;
   const userId = msg.from?.id;
   const text = (msg.text || "").trim();
 
+  if (!chatId || !userId) return;
+
   // si llega successful_payment aquí, procesamos
   if (msg.successful_payment) {
-    return handleSuccessfulPayment(msg).catch(console.error);
+    return handleSuccessfulPayment(msg).catch(async (e) => {
+      await notifyAdmin(`❌ ERROR handleSuccessfulPayment: ${e?.message || e}`);
+    });
   }
 
   // /start con parametro (ej: /start vip)
@@ -361,7 +361,7 @@ async function handleMessage(msg) {
 
     return send(
       chatId,
-      "Bienvenido\n\nOpciones:\n/temporal (ver estado)\n/vip (info VIP)\n\nSi ya pago: /ya_pague"
+      "Bienvenido\n\nOpciones:\n/temporal (ver estado)\n/vip (info VIP)\n/mi_vip (reenvia link si ya tiene VIP)\n\nSi ya pago: /ya_pague"
     );
   }
 
@@ -372,12 +372,27 @@ async function handleMessage(msg) {
     return send(chatId, "VIP mensual\n\nElija un metodo de pago:", vipMenuMarkup(true));
   }
 
+  // /mi_vip -> genera link nuevo si tiene VIP activo
+  if (text === "/mi_vip") {
+    const db = loadDB();
+    const info = db.vipMembers[String(userId)];
+    if (!info || !info.expiresAt || info.expiresAt <= Date.now()) {
+      return send(chatId, "Usted no tiene VIP activo\nSi ya pago, escriba /ya_pague");
+    }
+    try {
+      const linkObj = await createInviteLink(VIP_CHAT_ID, 10 * 60, 1);
+      db.lastVipLink[String(userId)] = { inviteLink: linkObj.invite_link, createdAt: Date.now() };
+      saveDB(db);
+      return send(chatId, `VIP activo ✅\nAqui su link personal (10 min): ${linkObj.invite_link}`);
+    } catch (e) {
+      await notifyAdmin(`❌ ERROR /mi_vip creando link\nUser: ${userId}\nError: ${e?.message || e}`);
+      return send(chatId, "VIP activo ✅\nPero no pude crear el link ahora\nEscriba /ya_pague para que el admin le mande el link");
+    }
+  }
+
   // /ya_pague (manual USDT)
   if (text === "/ya_pague") {
-    await send(
-      ADMIN_ID,
-      `Pago reportado\nUser: ${userId}\nChat: ${chatId}\nUse: /aprobar ${userId} 30`
-    );
+    await send(ADMIN_ID, `Pago reportado\nUser: ${userId}\nChat: ${chatId}\nUse: /aprobar ${userId} 30`);
     return send(chatId, "Listo ya avise al administrador\napenas apruebe le llegara su link VIP");
   }
 
@@ -385,10 +400,7 @@ async function handleMessage(msg) {
   if (text === "/temporal") {
     const db = loadDB();
     if (db.temp.openUntil && db.temp.openUntil > Date.now()) {
-      return send(
-        chatId,
-        `Temporal ABIERTO\nLink: ${db.temp.inviteLink}\nCierra en: ${fmtMs(db.temp.openUntil - Date.now())}`
-      );
+      return send(chatId, `Temporal ABIERTO\nLink: ${db.temp.inviteLink}\nCierra en: ${fmtMs(db.temp.openUntil - Date.now())}`);
     }
     return send(chatId, "Temporal CERRADO\nEspere que el admin lo abra");
   }
@@ -460,7 +472,7 @@ async function handleMessage(msg) {
 
     const { inviteLink, expiresAt } = await approveVip(targetId, days);
 
-    await send(targetId, `VIP aprobado por ${days} dias\nLink personal (10 min): ${inviteLink}`);
+    await send(targetId, `VIP aprobado por ${days} dias\nLink personal (10 min): ${inviteLink}\n\nSi se le vence, escriba /mi_vip`);
     return send(chatId, `Aprobado ${targetId}\nVence: ${new Date(expiresAt).toLocaleString()}`);
   }
 
@@ -482,18 +494,18 @@ app.post(`/webhook/${BOT_TOKEN}`, async (req, res) => {
   try {
     const update = req.body;
 
-    // IMPORTANTE: procesar mensaje normal
     if (update.message) await handleMessage(update.message);
+    if (update.edited_message) await handleMessage(update.edited_message); // NUEVO (por seguridad)
 
-    // callbacks (botones)
     if (update.callback_query) await handleCallbackQuery(update.callback_query);
-
-    // pre-checkout (stars)
     if (update.pre_checkout_query) await handlePreCheckoutQuery(update.pre_checkout_query);
 
     res.sendStatus(200);
   } catch (e) {
     console.error(e);
+    try {
+      await notifyAdmin(`❌ ERROR webhook: ${e?.message || e}`);
+    } catch {}
     res.sendStatus(200);
   }
 });
@@ -519,10 +531,13 @@ app.listen(PORT, async () => {
     try {
       await tg("setWebhook", { url });
       console.log("Webhook set:", url);
+      await notifyAdmin(`Webhook OK ✅\n${url}`);
     } catch (e) {
       console.error("Failed to setWebhook:", e.message);
+      await notifyAdmin(`❌ Failed setWebhook: ${e?.message || e}`);
     }
   } else {
     console.log("WEBHOOK_URL no configurado (luego lo pone en Render)");
+    await notifyAdmin("⚠️ WEBHOOK_URL no configurado en Render");
   }
 });
