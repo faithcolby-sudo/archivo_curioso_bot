@@ -20,6 +20,7 @@ const ADMIN_ID = Number(process.env.ADMIN_ID);
 const VIP_CHAT_ID = Number(process.env.VIP_CHAT_ID);
 const TEMP_CHAT_ID = Number(process.env.TEMP_CHAT_ID);
 const HUB_CHAT_ID = process.env.HUB_CHAT_ID ? Number(process.env.HUB_CHAT_ID) : null;
+
 const WEBHOOK_URL = process.env.WEBHOOK_URL;
 const PORT = process.env.PORT || 3000;
 
@@ -36,6 +37,9 @@ const DB_FILE = "./db.json";
  * su db.json viejo tenia solo vipMembers/temp y NO tenia paidStars/lastVipLink
  * entonces al pagar Stars el codigo se caia y no mandaba link
  * este loadDB "cura" el db aunque venga incompleto y lo guarda ya arreglado
+ *
+ * ✅ EXTRA:
+ * guardamos hubPinnedMessageId para poder EDITAR el post fijo en vez de spamear mensajes
  */
 function loadDB() {
   let db = {};
@@ -81,6 +85,12 @@ function loadDB() {
 
   if (!db.lastVipLink || typeof db.lastVipLink !== "object") {
     db.lastVipLink = {};
+    changed = true;
+  }
+
+  // ✅ nuevo: id del post fijo en HUB
+  if (typeof db.hubPinnedMessageId !== "number") {
+    db.hubPinnedMessageId = 0;
     changed = true;
   }
 
@@ -367,7 +377,7 @@ async function handleSuccessfulPayment(msg) {
 }
 
 /**
- * ✅ NUEVO: botones pro para /start (solo estetico, sin romper nada)
+ * ✅ botones pro para /start (solo estetico, sin romper nada)
  * usa botones URL para que funcionen siempre
  */
 function startMenuMarkup() {
@@ -413,6 +423,83 @@ function startWelcomeText() {
 }
 
 /**
+ * ✅ NUEVO: crea/edita el POST FIJO en HUB y lo fija
+ */
+async function upsertHubPinnedPost() {
+  if (!HUB_CHAT_ID) throw new Error("HUB_CHAT_ID no configurado");
+  if (!BOT_USERNAME) throw new Error("BOT_USERNAME no configurado");
+
+  const db = loadDB();
+  const botBase = `https://t.me/${BOT_USERNAME}`;
+
+  const texto =
+    "📁 Archivo Curioso 2.0\n\n" +
+    "Aqui el contenido esta archivado para el deleite de tus ojos\n\n" +
+    "🔥 Canal TEMPORAL\n" +
+    "Se abre por tiempo limitado con muestras exclusivas\n" +
+    "El contenido se borra al cerrar\n\n" +
+    "🔒 Canal VIP\n" +
+    "Acceso 24/7 sin borrados\n" +
+    "Se agregan aprox 10 videos diarios o mas\n\n" +
+    "Elija una opcion abajo";
+
+  const markup = {
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: "🔥 Ver canal TEMPORAL", url: `${botBase}?start=temporal` }],
+        [{ text: "🔒 Desbloquear VIP 30 dias", url: `${botBase}?start=vip` }],
+        [{ text: "✅ Mi VIP (reenviar link)", url: `${botBase}?start=mivip` }]
+      ]
+    }
+  };
+
+  // si ya hay message_id guardado -> EDITA
+  if (db.hubPinnedMessageId && db.hubPinnedMessageId > 0) {
+    try {
+      await tg("editMessageText", {
+        chat_id: HUB_CHAT_ID,
+        message_id: db.hubPinnedMessageId,
+        text: texto,
+        ...markup
+      });
+
+      // re-pin por si alguien cambió el fijado
+      try {
+        await tg("pinChatMessage", {
+          chat_id: HUB_CHAT_ID,
+          message_id: db.hubPinnedMessageId,
+          disable_notification: true
+        });
+      } catch {}
+
+      return { mode: "edited", messageId: db.hubPinnedMessageId };
+    } catch {
+      // si no se puede editar (borrado / id invalido), mandamos nuevo
+      db.hubPinnedMessageId = 0;
+      saveDB(db);
+    }
+  }
+
+  // manda nuevo y fija
+  const msg = await tg("sendMessage", {
+    chat_id: HUB_CHAT_ID,
+    text: texto,
+    ...markup
+  });
+
+  db.hubPinnedMessageId = msg.message_id;
+  saveDB(db);
+
+  await tg("pinChatMessage", {
+    chat_id: HUB_CHAT_ID,
+    message_id: msg.message_id,
+    disable_notification: true
+  });
+
+  return { mode: "sent", messageId: msg.message_id };
+}
+
+/**
  * COMANDOS
  */
 async function handleMessage(msg) {
@@ -433,7 +520,6 @@ async function handleMessage(msg) {
     const parts = text.split(/\s+/);
     const arg = (parts[1] || "").toLowerCase();
 
-    // si entran por botones URL
     if (arg === "vip") {
       return send(chatId, "🔒 VIP 30 dias\n\nElija un metodo de pago:", vipMenuMarkup(false));
     }
@@ -503,7 +589,6 @@ async function handleMessage(msg) {
       return send(chatId, "Listo ya avise al administrador\napenas apruebe le llegara su link VIP", startMenuMarkup());
     }
 
-    // start normal (bonito)
     if (!BOT_USERNAME) {
       return send(
         chatId,
@@ -548,6 +633,27 @@ async function handleMessage(msg) {
       return send(chatId, `Temporal ABIERTO\nLink: ${db.temp.inviteLink}\nCierra en: ${fmtMs(db.temp.openUntil - Date.now())}`);
     }
     return send(chatId, "Temporal CERRADO\nEspere que el admin lo abra");
+  }
+
+  // ✅ NUEVO: comando para crear/editar y fijar el post del canal HUB
+  if (text === "/post_fijo") {
+    if (!isAdmin(userId)) return send(chatId, "No autorizado");
+
+    if (!HUB_CHAT_ID) return send(chatId, "HUB_CHAT_ID no configurado en Render");
+    if (!BOT_USERNAME) return send(chatId, "BOT_USERNAME no configurado en Render");
+
+    try {
+      const r = await upsertHubPinnedPost();
+      return send(chatId, `Post fijo listo ✅\nModo: ${r.mode}\nMessage ID: ${r.messageId}`);
+    } catch (e) {
+      return send(
+        chatId,
+        "Post no se pudo fijar ❌\n" +
+          "Revise: bot admin del canal + permiso de fijar\n" +
+          "Error: " +
+          (e?.message || e)
+      );
+    }
   }
 
   if (text.startsWith("/abrir_temporal")) {
@@ -597,96 +703,7 @@ async function handleMessage(msg) {
     const days = Number(parts[2] || 30);
     if (!targetId || !Number.isFinite(days) || days <= 0) {
       return send(chatId, "Uso: /aprobar USER_ID 30");
-    if (!BOT_USERNAME) {
-      return send(chatId, "BOT_USERNAME no configurado en Render");
     }
-
-    const botBase = `https://t.me/${BOT_USERNAME}`;
-
-    const texto =
-      "📁 Archivo Curioso 2.0\n\n" +
-      "Aqui el contenido esta archivado para el deleite de tus ojos\n\n" +
-      "🔥 Canal TEMPORAL\n" +
-      "Se abre por tiempo limitado con muestras exclusivas\n" +
-      "El contenido se borra al cerrar\n\n" +
-      "🔒 Canal VIP\n" +
-      "Acceso 24/7 sin borrados\n" +
-      "Se agregan aprox 10 videos diarios\n\n" +
-      "Elija una opcion abajo";
-
-    await tg("sendMessage", {
-      chat_id: HUB_CHAT_ID,
-      text: texto,
-      reply_markup: {
-        inline_keyboard: [
-          [
-            { text: "🔥 Ver canal TEMPORAL", url: `${botBase}?start=temporal` }
-          ],
-          [
-            { text: "🔒 Desbloquear VIP 30 dias", url: `${botBase}?start=vip` }
-          ]
-        ]
-      }
-    });
-
-    return send(chatId, "Post enviado al canal publico ✅\nAhora fijelo manualmente.");
-  }
-    }
-  // 🔥 POST FIJO EN CANAL PUBLICO (HUB)
-if (text === "/post_fijo") {
-  if (!isAdmin(userId)) return send(chatId, "No autorizado");
-
-  if (!HUB_CHAT_ID) {
-    return send(chatId, "HUB_CHAT_ID no configurado en Render");
-  }
-
-  if (!BOT_USERNAME) {
-    return send(chatId, "BOT_USERNAME no configurado en Render");
-  }
-
-  const botBase = `https://t.me/${BOT_USERNAME}`;
-
-  const texto =
-    "📁 Archivo Curioso 2.0\n\n" +
-    "Aqui el contenido esta archivado para el deleite de tus ojos\n\n" +
-    "🔥 Canal TEMPORAL\n" +
-    "Se abre por tiempo limitado con muestras exclusivas\n" +
-    "El contenido se borra al cerrar\n\n" +
-    "🔒 Canal VIP\n" +
-    "Acceso 24/7 sin borrados\n" +
-    "Se agregan aprox 10 videos diarios o mas\n\n" +
-    "Elija una opcion abajo";
-
-  const msg = await tg("sendMessage", {
-    chat_id: HUB_CHAT_ID,
-    text: texto,
-    reply_markup: {
-      inline_keyboard: [
-        [
-          { text: "🔥 Ver canal TEMPORAL", url: `${botBase}?start=temporal` }
-        ],
-        [
-          { text: "🔒 Desbloquear VIP 30 dias", url: `${botBase}?start=vip` }
-        ],
-        [
-          { text: "✅ Mi VIP", url: `${botBase}?start=mivip` }
-        ]
-      ]
-    }
-  });
-
-  try {
-    await tg("pinChatMessage", {
-      chat_id: HUB_CHAT_ID,
-      message_id: msg.message_id,
-      disable_notification: true
-    });
-  } catch (e) {
-    return send(chatId, "Post enviado ✅ pero no pude fijarlo. Revise permisos del bot en el canal.");
-  }
-
-  return send(chatId, "Post enviado y fijado ✅");
-}
 
     const { inviteLink, expiresAt } = await approveVip(targetId, days);
 
