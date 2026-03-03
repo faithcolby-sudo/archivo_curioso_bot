@@ -632,6 +632,61 @@ async function handleMessage(msg) {
     return send(chatId, "Post enviado al canal publico ✅\nAhora fijelo manualmente.");
   }
     }
+  // 🔥 POST FIJO EN CANAL PUBLICO (HUB)
+if (text === "/post_fijo") {
+  if (!isAdmin(userId)) return send(chatId, "No autorizado");
+
+  if (!HUB_CHAT_ID) {
+    return send(chatId, "HUB_CHAT_ID no configurado en Render");
+  }
+
+  if (!BOT_USERNAME) {
+    return send(chatId, "BOT_USERNAME no configurado en Render");
+  }
+
+  const botBase = `https://t.me/${BOT_USERNAME}`;
+
+  const texto =
+    "📁 Archivo Curioso 2.0\n\n" +
+    "Aqui el contenido esta archivado para el deleite de tus ojos\n\n" +
+    "🔥 Canal TEMPORAL\n" +
+    "Se abre por tiempo limitado con muestras exclusivas\n" +
+    "El contenido se borra al cerrar\n\n" +
+    "🔒 Canal VIP\n" +
+    "Acceso 24/7 sin borrados\n" +
+    "Se agregan aprox 10 videos diarios o mas\n\n" +
+    "Elija una opcion abajo";
+
+  const msg = await tg("sendMessage", {
+    chat_id: HUB_CHAT_ID,
+    text: texto,
+    reply_markup: {
+      inline_keyboard: [
+        [
+          { text: "🔥 Ver canal TEMPORAL", url: `${botBase}?start=temporal` }
+        ],
+        [
+          { text: "🔒 Desbloquear VIP 30 dias", url: `${botBase}?start=vip` }
+        ],
+        [
+          { text: "✅ Mi VIP", url: `${botBase}?start=mivip` }
+        ]
+      ]
+    }
+  });
+
+  try {
+    await tg("pinChatMessage", {
+      chat_id: HUB_CHAT_ID,
+      message_id: msg.message_id,
+      disable_notification: true
+    });
+  } catch (e) {
+    return send(chatId, "Post enviado ✅ pero no pude fijarlo. Revise permisos del bot en el canal.");
+  }
+
+  return send(chatId, "Post enviado y fijado ✅");
+}
 
     const { inviteLink, expiresAt } = await approveVip(targetId, days);
 
