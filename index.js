@@ -77,7 +77,10 @@ function vipMenuMarkup(includeBack = false) {
 
 /** STARS: manda invoice (XTR) */
 async function sendStarsInvoice(chatId, userId) {
-  const amountStars = Number(VIP_PRICE_STARS) || 275;
+  let amountStars = Number(VIP_PRICE_STARS);
+  if (!Number.isFinite(amountStars) || amountStars <= 0) amountStars = 275;
+  amountStars = Math.floor(amountStars);
+  if (amountStars < 1) amountStars = 1;
 
   // payload único (para validar en pre_checkout)
   const payload = `vip30_${userId}_${Date.now()}`;
@@ -213,7 +216,6 @@ async function handleCallbackQuery(cb) {
   if (!chatId || !userId) return;
 
   if (data === "vip_stars") {
-    // manda invoice Stars y listo
     await send(chatId, "Pago con Stars\n\nSe abrira el pago aqui mismo, complete el pago y se activara automaticamente.");
     return sendStarsInvoice(chatId, userId);
   }
@@ -244,19 +246,18 @@ async function handleCallbackQuery(cb) {
 
 /** PRE-CHECKOUT (Stars) */
 async function handlePreCheckoutQuery(q) {
-  // valida que sea nuestro producto
+  const expected = Number(VIP_PRICE_STARS) || 275;
+
   const ok =
     q.currency === "XTR" &&
-    Number(q.total_amount) === (Number(VIP_PRICE_STARS) || 275) &&
+    Number(q.total_amount) === expected &&
     typeof q.invoice_payload === "string" &&
     q.invoice_payload.startsWith("vip30_");
 
-  // Telegram exige respuesta en 10s
-  return tg("answerPreCheckoutQuery", {
-    pre_checkout_query_id: q.id,
-    ok,
-    error_message: ok ? undefined : "Pago invalido, intente de nuevo."
-  });
+  const payload = { pre_checkout_query_id: q.id, ok: !!ok };
+  if (!ok) payload.error_message = "Pago invalido, intente de nuevo.";
+
+  return tg("answerPreCheckoutQuery", payload);
 }
 
 /** SUCCESSFUL PAYMENT (Stars) -> auto aprueba VIP */
@@ -266,22 +267,21 @@ async function handleSuccessfulPayment(msg) {
   const sp = msg.successful_payment;
   if (!userId || !chatId || !sp) return;
 
-  // Solo Stars de VIP
   const expected = Number(VIP_PRICE_STARS) || 275;
+
+  // valida Stars + monto + payload nuestro
   if (sp.currency !== "XTR" || Number(sp.total_amount) !== expected) return;
+  if (!sp.invoice_payload || !String(sp.invoice_payload).startsWith("vip30_")) return;
 
   const db = loadDB();
   const chargeId = sp.telegram_payment_charge_id || "";
-  if (chargeId && db.paidStars[chargeId]) {
-    // ya procesado
-    return;
-  }
+  if (chargeId && db.paidStars[chargeId]) return;
+
   if (chargeId) {
     db.paidStars[chargeId] = true;
     saveDB(db);
   }
 
-  // aprueba 30 días automáticamente
   const { inviteLink, expiresAt } = await approveVip(userId, 30);
 
   await send(chatId, `Pago recibido ✅\nVIP activado 30 dias\n\nLink personal (10 min): ${inviteLink}`);
