@@ -597,8 +597,6 @@ async function handleMessage(msg) {
     const days = Number(parts[2] || 30);
     if (!targetId || !Number.isFinite(days) || days <= 0) {
       return send(chatId, "Uso: /aprobar USER_ID 30");
-
-
     if (!BOT_USERNAME) {
       return send(chatId, "BOT_USERNAME no configurado en Render");
     }
