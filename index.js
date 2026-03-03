@@ -367,6 +367,52 @@ async function handleSuccessfulPayment(msg) {
 }
 
 /**
+ * ✅ NUEVO: botones pro para /start (solo estetico, sin romper nada)
+ * usa botones URL para que funcionen siempre
+ */
+function startMenuMarkup() {
+  if (!BOT_USERNAME) return {};
+  const base = `https://t.me/${BOT_USERNAME}`;
+  return {
+    reply_markup: {
+      inline_keyboard: [
+        [
+          { text: "🔥 Ver canal TEMPORAL", url: `${base}?start=temporal` },
+          { text: "🔒 Acceso VIP 30 dias", url: `${base}?start=vip` }
+        ],
+        [
+          { text: "📌 Info VIP", url: `${base}?start=info` },
+          { text: "✅ Mi VIP (reenviar link)", url: `${base}?start=mivip` }
+        ],
+        [{ text: "💬 Ya pague (USDT)", url: `${base}?start=yapague` }]
+      ]
+    }
+  };
+}
+
+function startWelcomeText() {
+  return (
+    "📁 Archivo Curioso 2.0\n" +
+    "Bienvenido\n\n" +
+    "Aqui el contenido esta archivado para el deleite de tus ojos\n" +
+    "Todo se maneja por accesos\n\n" +
+    "🔥 CANAL TEMPORAL\n" +
+    "Se abre por tiempo limitado y de forma aleatoria\n" +
+    "Normalmente abre unas 2 horas\n" +
+    "Lo que vea ahi es una muestra\n" +
+    "Hay pocos archivos 2 o 3 al dia y calidad media\n" +
+    "Cuando se cumple el tiempo el contenido se borra automaticamente\n" +
+    "Si usted entra puede quedarse o salir pero el link luego cambia\n\n" +
+    "🔒 CANAL VIP\n" +
+    "Esta abierto 24/7\n" +
+    "El contenido no se borra queda archivado completo\n" +
+    "Se suben aprox 10 videos diarios o mas\n" +
+    "Cuando active VIP el bot le manda su link personal\n\n" +
+    "Elija una opcion aqui abajo"
+  );
+}
+
+/**
  * COMANDOS
  */
 async function handleMessage(msg) {
@@ -382,25 +428,96 @@ async function handleMessage(msg) {
     });
   }
 
-  // /start con parametro
+  // /start con parametro (ESTETICO + BOTONES)
   if (text.startsWith("/start")) {
     const parts = text.split(/\s+/);
     const arg = (parts[1] || "").toLowerCase();
 
+    // si entran por botones URL
     if (arg === "vip") {
-      return send(chatId, "VIP mensual\n\nElija un metodo de pago:", vipMenuMarkup(false));
+      return send(chatId, "🔒 VIP 30 dias\n\nElija un metodo de pago:", vipMenuMarkup(false));
     }
 
-    return send(
-      chatId,
-      "Bienvenido\n\nOpciones:\n/temporal (ver estado)\n/vip (info VIP)\n/mi_vip (reenvia link si ya tiene VIP)\n\nSi ya pago: /ya_pague"
-    );
+    if (arg === "temporal") {
+      const db = loadDB();
+      if (db.temp.openUntil && db.temp.openUntil > Date.now()) {
+        return send(
+          chatId,
+          "🔥 TEMPORAL ABIERTO\n\nEntre aqui:\n" +
+            db.temp.inviteLink +
+            "\n\nCierra en: " +
+            fmtMs(db.temp.openUntil - Date.now()),
+          startMenuMarkup()
+        );
+      }
+      return send(
+        chatId,
+        "🔥 TEMPORAL CERRADO\n\nSe abre por ratos y por tiempo limitado\nVuelva mas tarde",
+        startMenuMarkup()
+      );
+    }
+
+    if (arg === "info") {
+      return send(
+        chatId,
+        "📌 INFO VIP\n\n" +
+          "VIP esta abierto 24/7\n" +
+          "Contenido completo sin borrarse\n" +
+          "Aprox 10 videos diarios o mas\n\n" +
+          "Para comprar toque VIP y pague con Stars o USDT",
+        startMenuMarkup()
+      );
+    }
+
+    if (arg === "mivip") {
+      const db = loadDB();
+      const info = db.vipMembers[String(userId)];
+      if (!info || !info.expiresAt || info.expiresAt <= Date.now()) {
+        return send(
+          chatId,
+          "Usted no tiene VIP activo\nSi ya pago toque Ya pague (USDT) o escriba /ya_pague",
+          startMenuMarkup()
+        );
+      }
+      try {
+        const linkObj = await createInviteLink(VIP_CHAT_ID, 10 * 60, 1);
+        db.lastVipLink[String(userId)] = { inviteLink: linkObj.invite_link, createdAt: Date.now() };
+        saveDB(db);
+        return send(
+          chatId,
+          "✅ VIP activo\n\nAqui su link personal (10 min):\n" + linkObj.invite_link,
+          startMenuMarkup()
+        );
+      } catch (e) {
+        await notifyAdmin(`❌ ERROR start=mivip creando link\nUser: ${userId}\nError: ${e?.message || e}`);
+        return send(
+          chatId,
+          "✅ VIP activo\nPero no pude crear el link ahora\nEscriba /ya_pague para que el admin le mande el link",
+          startMenuMarkup()
+        );
+      }
+    }
+
+    if (arg === "yapague") {
+      await send(ADMIN_ID, `Pago reportado\nUser: ${userId}\nChat: ${chatId}\nUse: /aprobar ${userId} 30`);
+      return send(chatId, "Listo ya avise al administrador\napenas apruebe le llegara su link VIP", startMenuMarkup());
+    }
+
+    // start normal (bonito)
+    if (!BOT_USERNAME) {
+      return send(
+        chatId,
+        startWelcomeText() + "\n\n⚠️ Falta BOT_USERNAME en Render para mostrar botones\nPor ahora use /vip o /temporal",
+        {}
+      );
+    }
+    return send(chatId, startWelcomeText(), startMenuMarkup());
   }
 
   if (!text.startsWith("/")) return;
 
   if (text === "/vip") {
-    return send(chatId, "VIP mensual\n\nElija un metodo de pago:", vipMenuMarkup(true));
+    return send(chatId, "🔒 VIP 30 dias\n\nElija un metodo de pago:", vipMenuMarkup(true));
   }
 
   if (text === "/mi_vip") {
@@ -495,58 +612,3 @@ async function handleMessage(msg) {
     const db = loadDB();
     const info = db.vipMembers[targetId];
     if (!info) return send(chatId, "No esta en VIP");
-    const left = info.expiresAt - Date.now();
-    return send(chatId, `VIP activo\nFaltan: ${fmtMs(left)}\nVence: ${new Date(info.expiresAt).toLocaleString()}`);
-  }
-}
-
-// WEBHOOK endpoint
-app.post(`/webhook/${BOT_TOKEN}`, async (req, res) => {
-  try {
-    const update = req.body;
-
-    if (update.message) await handleMessage(update.message);
-    if (update.edited_message) await handleMessage(update.edited_message);
-
-    if (update.callback_query) await handleCallbackQuery(update.callback_query);
-    if (update.pre_checkout_query) await handlePreCheckoutQuery(update.pre_checkout_query);
-
-    res.sendStatus(200);
-  } catch (e) {
-    console.error(e);
-    try { await notifyAdmin(`❌ ERROR webhook: ${e?.message || e}`); } catch {}
-    res.sendStatus(200);
-  }
-});
-
-app.get("/", (req, res) => res.send("OK"));
-
-app.listen(PORT, async () => {
-  console.log("Server running on", PORT);
-
-  setInterval(() => {
-    checkVipExpirations().catch(console.error);
-  }, 5 * 60 * 1000);
-
-  setInterval(async () => {
-    const db = loadDB();
-    if (db.temp.openUntil && db.temp.openUntil <= Date.now()) {
-      await closeTemporal().catch(console.error);
-    }
-  }, 60 * 1000);
-
-  if (WEBHOOK_URL) {
-    const url = `${WEBHOOK_URL}/webhook/${BOT_TOKEN}`;
-    try {
-      await tg("setWebhook", { url });
-      console.log("Webhook set:", url);
-      await notifyAdmin(`Webhook OK ✅\n${url}`);
-    } catch (e) {
-      console.error("Failed to setWebhook:", e.message);
-      await notifyAdmin(`❌ Failed setWebhook: ${e?.message || e}`);
-    }
-  } else {
-    console.log("WEBHOOK_URL no configurado (luego lo pone en Render)");
-    await notifyAdmin("⚠️ WEBHOOK_URL no configurado en Render");
-  }
-});
