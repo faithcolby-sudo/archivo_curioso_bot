@@ -252,12 +252,37 @@ async function openTemporal(hours) {
   db.temp.postedMessageIds = [];
   saveDB(db);
 
-  const m1 = await tg("sendMessage", { chat_id: TEMP_CHAT_ID, text: "Canal TEMPORAL abierto por tiempo limitado" });
-  const m2 = await tg("sendMessage", { chat_id: TEMP_CHAT_ID, text: "Muestra 1 (aqui luego pondremos su contenido)" });
-  const m3 = await tg("sendMessage", { chat_id: TEMP_CHAT_ID, text: "Para VIP escriba al bot: /vip" });
+  const texto =
+`🔥 CANAL TEMPORAL ABIERTO
 
-  db.temp.postedMessageIds = [m1.message_id, m2.message_id, m3.message_id];
-  saveDB(db);
+Este canal es meramente temporal.
+
+El contenido estará disponible solo por un tiempo limitado.
+Cuando se termine el tiempo, todo el contenido será eliminado automáticamente y el acceso al canal se cerrará.
+
+Luego tendrán que esperar hasta la próxima vez que el canal temporal vuelva a abrir.
+
+💎 Si no quiere esperar y desea acceso permanente, en el CANAL VIP encontrará:
+
+• Mucho más contenido
+• Contenido sin restricciones
+• Nuevo contenido que se sube constantemente
+
+El canal VIP permanece abierto 24/7.`;
+
+const m1 = await tg("sendMessage", {
+  chat_id: TEMP_CHAT_ID,
+  text: texto,
+  reply_markup: {
+    inline_keyboard: [
+      [
+        { text: "💎 ACCEDER AL CANAL VIP", url: `https://t.me/${BOT_USERNAME}?start=vip` }
+      ]
+    ]
+  }
+});
+
+db.temp.postedMessageIds = [m1.message_id];
 
   return { inviteLink: linkObj.invite_link, openUntil };
 }
