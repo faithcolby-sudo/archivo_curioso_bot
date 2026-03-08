@@ -356,8 +356,12 @@ async function handleCallbackQuery(cb) {
     return send(
       chatId,
       `💵 Pago con USDT\n\nPrecio: ${VIP_PRICE_USDT} USDT\n\n${VIP_PAY_USDT_TEXT}\n\n` +
-      `Una vez realizado el pago, envie aqui una FOTO del comprobante y lo revisaremos.`,
-      { reply_markup: { inline_keyboard: [[{ text: "Cancelar", callback_data: "back_home" }]] } }
+      `━━━━━━━━━━━━━━━\n` +
+      `📸 Una vez pagado:\n` +
+      `Tome una captura de pantalla del comprobante y enviela AQUI en este chat\n\n` +
+      `👉 Toque el icono 📎 (clip) y seleccione la foto del comprobante\n\n` +
+      `Sin foto no podemos activar su VIP.`,
+      { reply_markup: { inline_keyboard: [[{ text: "❌ Cancelar", callback_data: "back_home" }]] } }
     );
   }
 
@@ -368,13 +372,17 @@ async function handleCallbackQuery(cb) {
       `🇪🇨 Transferencia Bancaria — Solo Ecuador\n\n` +
       `El acceso al Canal VIP tiene un costo de $6.00 USD.\n\n` +
       `Para obtener los datos bancarios y realizar el pago, comuniquese con el administrador:\n\n` +
-      `👤 ${ADMIN_USERNAME}`,
+      `👤 ${ADMIN_USERNAME}\n\n` +
+      `━━━━━━━━━━━━━━━\n` +
+      `📸 Una vez que haya pagado:\n` +
+      `Tome una captura de pantalla del comprobante de transferencia y enviela AQUI en este chat\n\n` +
+      `👉 Toque el icono 📎 (clip) y seleccione la foto del comprobante\n\n` +
+      `Sin foto no activamos el VIP.`,
       {
         reply_markup: {
           inline_keyboard: [
             [{ text: "💬 Contactar Administrador", url: ADMIN_LINK }],
-            [{ text: "📸 Ya pague — Enviar comprobante", callback_data: "vip_yapague" }],
-            [{ text: "Volver", callback_data: "back_home" }]
+            [{ text: "❌ Cancelar", callback_data: "back_home" }]
           ]
         }
       }
@@ -382,7 +390,6 @@ async function handleCallbackQuery(cb) {
   }
 
   if (data === "vip_yapague") {
-    // Si no tiene metodo pendiente, pedirle que elija primero
     if (!pendingProof[userId]) {
       return send(
         chatId,
@@ -392,8 +399,12 @@ async function handleCallbackQuery(cb) {
     }
     return send(
       chatId,
-      "📸 Perfecto\n\nEnvie aqui una FOTO del comprobante de pago.\n\nSin comprobante no podemos activar su VIP.",
-      { reply_markup: { inline_keyboard: [[{ text: "Cancelar", callback_data: "back_home" }]] } }
+      `📸 Envie aqui la foto del comprobante\n\n` +
+      `👉 Toque el icono 📎 (clip) abajo\n` +
+      `👉 Seleccione "Galeria" o "Archivo"\n` +
+      `👉 Elija la captura de pantalla del pago\n\n` +
+      `En cuanto la recibamos activamos su VIP.`,
+      { reply_markup: { inline_keyboard: [[{ text: "❌ Cancelar", callback_data: "back_home" }]] } }
     );
   }
 
