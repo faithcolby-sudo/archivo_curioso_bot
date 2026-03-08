@@ -29,6 +29,14 @@ const HUB_CHAT_ID = process.env.HUB_CHAT_ID ? Number(process.env.HUB_CHAT_ID) : 
 const WEBHOOK_URL = process.env.WEBHOOK_URL;
 const PORT = process.env.PORT || 3000;
 
+// Admin Telegram username y link
+const ADMIN_USERNAME = "@Adm_archivo2";
+const ADMIN_LINK = "https://t.me/Adm_archivo2";
+
+// Estado en memoria: usuarios esperando enviar comprobante
+// { userId: { method: "usdt"|"transfer", timestamp: Date.now() } }
+const pendingProof = {};
+
 if (!BOT_TOKEN || !ADMIN_ID || !VIP_CHAT_ID || !TEMP_CHAT_ID) {
   console.error("FALTAN VARIABLES DE ENTORNO: BOT_TOKEN, ADMIN_ID, VIP_CHAT_ID, TEMP_CHAT_ID");
   process.exit(1);
@@ -100,6 +108,12 @@ function loadDB() {
     changed = true;
   }
 
+  // ✅ NUEVO: registro de avisos de renovación ya enviados
+  if (!db.renewalNotified || typeof db.renewalNotified !== "object") {
+    db.renewalNotified = {};
+    changed = true;
+  }
+
   if (changed) {
     try {
       fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2));
@@ -140,9 +154,10 @@ async function notifyAdmin(text) {
 
 function vipMenuMarkup(includeBack = false) {
   const rows = [
-    [{ text: `Pagar con Stars (${VIP_PRICE_STARS})`, callback_data: "vip_stars" }],
-    [{ text: `Pagar con USDT (${VIP_PRICE_USDT})`, callback_data: "vip_usdt" }],
-    [{ text: "Ya pague", callback_data: "vip_yapague" }]
+    [{ text: `⭐ Pagar con Stars (${VIP_PRICE_STARS})`, callback_data: "vip_stars" }],
+    [{ text: `💵 Pagar con USDT ($${VIP_PRICE_USDT})`, callback_data: "vip_usdt" }],
+    [{ text: "🇪🇨 Transferencia Bancaria (solo Ecuador)", callback_data: "vip_transfer_ec" }],
+    [{ text: "✅ Ya pague", callback_data: "vip_yapague" }]
   ];
   if (includeBack) rows.push([{ text: "Volver", callback_data: "back_home" }]);
   return { reply_markup: { inline_keyboard: rows } };
@@ -332,21 +347,54 @@ async function handleCallbackQuery(cb) {
   if (!chatId || !userId) return;
 
   if (data === "vip_stars") {
-    await send(chatId, "Pago con Stars\n\nSe abrira el pago aqui mismo, complete el pago y se activara automaticamente.");
+    await send(chatId, "⭐ Pago con Stars\n\nSe abrira el pago aqui mismo, complete el pago y se activara automaticamente.");
     return sendStarsInvoice(chatId, userId);
   }
 
   if (data === "vip_usdt") {
+    pendingProof[userId] = { method: "usdt", timestamp: Date.now() };
     return send(
       chatId,
-      `Pago con USDT\n\nPrecio: ${VIP_PRICE_USDT} USDT\n\n${VIP_PAY_USDT_TEXT}\n\nLuego toque "Ya pague" o escriba /ya_pague`,
-      vipMenuMarkup(true)
+      `💵 Pago con USDT\n\nPrecio: ${VIP_PRICE_USDT} USDT\n\n${VIP_PAY_USDT_TEXT}\n\n` +
+      `Una vez realizado el pago, envie aqui una FOTO del comprobante y lo revisaremos.`,
+      { reply_markup: { inline_keyboard: [[{ text: "Cancelar", callback_data: "back_home" }]] } }
+    );
+  }
+
+  if (data === "vip_transfer_ec") {
+    pendingProof[userId] = { method: "transfer", timestamp: Date.now() };
+    return send(
+      chatId,
+      `🇪🇨 Transferencia Bancaria — Solo Ecuador\n\n` +
+      `El acceso al Canal VIP tiene un costo de $6.00 USD.\n\n` +
+      `Para obtener los datos bancarios y realizar el pago, comuniquese con el administrador:\n\n` +
+      `👤 ${ADMIN_USERNAME}`,
+      {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: "💬 Contactar Administrador", url: ADMIN_LINK }],
+            [{ text: "📸 Ya pague — Enviar comprobante", callback_data: "vip_yapague" }],
+            [{ text: "Volver", callback_data: "back_home" }]
+          ]
+        }
+      }
     );
   }
 
   if (data === "vip_yapague") {
-    await send(ADMIN_ID, `Pago reportado\nUser: ${userId}\nChat: ${chatId}\nUse: /aprobar ${userId} 30`);
-    return send(chatId, "Listo ya avise al administrador\napenas apruebe le llegara su link VIP");
+    // Si no tiene metodo pendiente, pedirle que elija primero
+    if (!pendingProof[userId]) {
+      return send(
+        chatId,
+        "Por favor elija primero el metodo de pago (USDT o Transferencia Ecuador) y realize el pago antes de reportar.",
+        vipMenuMarkup(true)
+      );
+    }
+    return send(
+      chatId,
+      "📸 Perfecto\n\nEnvie aqui una FOTO del comprobante de pago.\n\nSin comprobante no podemos activar su VIP.",
+      { reply_markup: { inline_keyboard: [[{ text: "Cancelar", callback_data: "back_home" }]] } }
+    );
   }
 
   if (data === "back_home") {
@@ -558,6 +606,36 @@ async function handleMessage(msg) {
     return handleSuccessfulPayment(msg).catch(async (e) => {
       await notifyAdmin(`❌ ERROR handleSuccessfulPayment: ${e?.message || e}`);
     });
+  }
+
+  // ✅ NUEVO: comprobante de pago (foto)
+  if (msg.photo && msg.photo.length > 0) {
+    const proof = pendingProof[userId];
+    if (proof) {
+      // limpiar estado pendiente
+      delete pendingProof[userId];
+
+      const methodLabel = proof.method === "transfer" ? "Transferencia Ecuador ($6)" : `USDT ($${VIP_PRICE_USDT})`;
+      const fileId = msg.photo[msg.photo.length - 1].file_id;
+
+      // reenviar foto al admin con info
+      await tg("sendPhoto", {
+        chat_id: ADMIN_ID,
+        photo: fileId,
+        caption:
+          `📸 Comprobante de pago recibido\n` +
+          `User: ${userId}\nChat: ${chatId}\n` +
+          `Metodo: ${methodLabel}\n\n` +
+          `Si el pago es valido use:\n/aprobar ${userId} 30`
+      });
+
+      return send(
+        chatId,
+        "✅ Comprobante recibido\n\nEl administrador lo revisara y activara su VIP en breve.\n\nSi tiene alguna duda contacte a " + ADMIN_USERNAME
+      );
+    }
+    // foto sin contexto: ignorar silenciosamente
+    return;
   }
 
   if (text.startsWith("/start")) {
@@ -792,6 +870,25 @@ async function handleMessage(msg) {
     const left = info.expiresAt - Date.now();
     return send(chatId, `VIP activo\nFaltan: ${fmtMs(left)}\nVence: ${new Date(info.expiresAt).toLocaleString()}`);
   }
+
+  // ✅ NUEVO: /lista_vip — lista todos los VIP activos
+  if (text === "/lista_vip") {
+    if (!isAdmin(userId)) return send(chatId, "No autorizado");
+    const db = loadDB();
+    const now = Date.now();
+    const entries = Object.entries(db.vipMembers).filter(([, v]) => v.expiresAt > now);
+
+    if (entries.length === 0) {
+      return send(chatId, "No hay miembros VIP activos actualmente.");
+    }
+
+    const lines = entries.map(([uid, v]) => {
+      const left = fmtMs(v.expiresAt - now);
+      return `👤 ${uid} — vence en ${left}\n(${new Date(v.expiresAt).toLocaleString()})`;
+    });
+
+    return send(chatId, `📋 VIP activos: ${entries.length}\n\n` + lines.join("\n\n"));
+  }
 }
 
 /**
@@ -839,6 +936,44 @@ app.listen(PORT, async () => {
   setInterval(() => {
     checkVipExpirations().catch(console.error);
   }, 5 * 60 * 1000);
+
+  // ✅ NUEVO: aviso de renovación 2 días antes
+  setInterval(async () => {
+    try {
+      const db = loadDB();
+      const now = Date.now();
+      const twoDays = 2 * 24 * 60 * 60 * 1000;
+
+      for (const [userIdStr, info] of Object.entries(db.vipMembers)) {
+        if (!info?.expiresAt) continue;
+        const timeLeft = info.expiresAt - now;
+
+        // entre 0 y 2 días restantes, y no notificado aún
+        if (timeLeft > 0 && timeLeft <= twoDays && !db.renewalNotified[userIdStr]) {
+          db.renewalNotified[userIdStr] = true;
+          saveDB(db);
+
+          try {
+            await send(
+              Number(userIdStr),
+              `⏰ Tu acceso VIP vence en menos de 2 dias\n\n` +
+              `Vence: ${new Date(info.expiresAt).toLocaleString()}\n\n` +
+              `Para renovar y no perder el acceso, elija un metodo de pago:`,
+              vipMenuMarkup(false)
+            );
+          } catch {}
+        }
+
+        // limpiar notificados cuyo VIP ya venció
+        if (timeLeft <= 0 && db.renewalNotified[userIdStr]) {
+          delete db.renewalNotified[userIdStr];
+        }
+      }
+      saveDB(db);
+    } catch (e) {
+      console.error("renewalCheck error:", e);
+    }
+  }, 30 * 60 * 1000); // revisa cada 30 min
 
   setInterval(async () => {
     const db = loadDB();
