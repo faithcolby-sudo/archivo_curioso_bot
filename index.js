@@ -423,14 +423,22 @@ async function handlePreCheckoutQuery(q) {
     typeof q.invoice_payload === "string" &&
     q.invoice_payload.startsWith("vip30_");
 
-  await notifyAdmin(
-    `${ok ? "PreCheckout Stars OK ✅" : "PreCheckout Stars FAIL ❌"}\nUser: ${q.from?.id}\nMonto: ${q.total_amount} ${q.currency}\nExpected: ${expected}\nPayload:\n${q.invoice_payload}`
-  );
-
+  // ✅ CRITICO: responder PRIMERO antes de cualquier otra cosa
+  // Telegram exige respuesta en menos de 10 segundos o cancela el pago
   const payload = { pre_checkout_query_id: q.id, ok: !!ok };
   if (!ok) payload.error_message = "Pago invalido, intente de nuevo.";
 
-  return tg("answerPreCheckoutQuery", payload);
+  try {
+    await tg("answerPreCheckoutQuery", payload);
+  } catch (e) {
+    await notifyAdmin(`❌ ERROR answerPreCheckoutQuery: ${e?.message || e}`);
+    return;
+  }
+
+  // Notificar al admin DESPUÉS de responder (no bloquea el pago)
+  await notifyAdmin(
+    `${ok ? "PreCheckout Stars OK ✅" : "PreCheckout Stars FAIL ❌"}\nUser: ${q.from?.id}\nMonto: ${q.total_amount} ${q.currency}\nExpected: ${expected}\nPayload:\n${q.invoice_payload}`
+  ).catch(() => {});
 }
 
 /** SUCCESSFUL PAYMENT (Stars) -> auto aprueba VIP */
