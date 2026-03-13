@@ -1,16 +1,12 @@
 import express from "express";
 import fetch from "node-fetch";
 import fs from "fs";
-import crypto from "crypto";
 
 const app = express();
 app.use(express.json());
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const BOT_USERNAME = (process.env.BOT_USERNAME || "").replace("@", "").trim();
-
-// ✅ NUEVO: URL de su página con publicidad (Hostinger)
-const AD_LANDING_URL = String(process.env.AD_LANDING_URL || "").trim();
 
 // precios / texto
 const VIP_PRICE_STARS = String(process.env.VIP_PRICE_STARS || "500"); // 500 Stars = 30 días
@@ -23,7 +19,6 @@ const VIP_PAY_USDT_TEXT = String(
 
 const ADMIN_ID = Number(process.env.ADMIN_ID);
 const VIP_CHAT_ID = Number(process.env.VIP_CHAT_ID);
-const TEMP_CHAT_ID = Number(process.env.TEMP_CHAT_ID);
 const HUB_CHAT_ID = process.env.HUB_CHAT_ID ? Number(process.env.HUB_CHAT_ID) : null;
 
 const WEBHOOK_URL = process.env.WEBHOOK_URL;
@@ -37,8 +32,8 @@ const ADMIN_LINK = "https://t.me/Adm_archivo2";
 // { userId: { method: "usdt"|"transfer", timestamp: Date.now() } }
 const pendingProof = {};
 
-if (!BOT_TOKEN || !ADMIN_ID || !VIP_CHAT_ID || !TEMP_CHAT_ID) {
-  console.error("FALTAN VARIABLES DE ENTORNO: BOT_TOKEN, ADMIN_ID, VIP_CHAT_ID, TEMP_CHAT_ID");
+if (!BOT_TOKEN || !ADMIN_ID || !VIP_CHAT_ID) {
+  console.error("FALTAN VARIABLES DE ENTORNO: BOT_TOKEN, ADMIN_ID, VIP_CHAT_ID");
   process.exit(1);
 }
 
@@ -48,7 +43,6 @@ const DB_FILE = "./db.json";
 /**
  * ✅ loadDB cura db.json incompleto
  * ✅ EXTRA: hubPinnedMessageId para editar post fijo
- * ✅ NUEVO: gateCodes para obligar pasar por publicidad antes del link temporal
  */
 function loadDB() {
   let db = {};
@@ -70,23 +64,6 @@ function loadDB() {
     changed = true;
   }
 
-  if (!db.temp || typeof db.temp !== "object") {
-    db.temp = { openUntil: 0, inviteLink: "", postedMessageIds: [] };
-    changed = true;
-  }
-  if (typeof db.temp.openUntil !== "number") {
-    db.temp.openUntil = 0;
-    changed = true;
-  }
-  if (typeof db.temp.inviteLink !== "string") {
-    db.temp.inviteLink = "";
-    changed = true;
-  }
-  if (!Array.isArray(db.temp.postedMessageIds)) {
-    db.temp.postedMessageIds = [];
-    changed = true;
-  }
-
   if (!db.paidStars || typeof db.paidStars !== "object") {
     db.paidStars = {};
     changed = true;
@@ -102,13 +79,7 @@ function loadDB() {
     changed = true;
   }
 
-  // ✅ NUEVO: códigos para acceso temporal (uno solo uso)
-  if (!db.gateCodes || typeof db.gateCodes !== "object") {
-    db.gateCodes = {};
-    changed = true;
-  }
-
-  // ✅ NUEVO: registro de avisos de renovación ya enviados
+  // ✅ registro de avisos de renovación ya enviados
   if (!db.renewalNotified || typeof db.renewalNotified !== "object") {
     db.renewalNotified = {};
     changed = true;
@@ -198,98 +169,6 @@ async function revokeInvite(chatId, inviteLink) {
 async function kickUser(chatId, userId) {
   await tg("banChatMember", { chat_id: chatId, user_id: userId });
   await tg("unbanChatMember", { chat_id: chatId, user_id: userId });
-}
-
-/**
- * ✅ NUEVO: generar codigo de acceso temporal (expira rápido y 1 uso)
- */
-function createGateCode() {
-  return crypto.randomBytes(8).toString("hex"); // 16 chars
-}
-
-function addGateCode(ttlSeconds = 10 * 60) {
-  const db = loadDB();
-  const code = createGateCode();
-  db.gateCodes[code] = { expiresAt: Date.now() + ttlSeconds * 1000, used: false };
-  saveDB(db);
-  return code;
-}
-
-function consumeGateCode(code) {
-  const db = loadDB();
-  const item = db.gateCodes[code];
-  if (!item) return { ok: false, reason: "code_no_existe" };
-  if (item.used) return { ok: false, reason: "code_usado" };
-  if (item.expiresAt <= Date.now()) return { ok: false, reason: "code_expirado" };
-
-  item.used = true;
-  db.gateCodes[code] = item;
-  saveDB(db);
-  return { ok: true };
-}
-
-// limpia códigos viejos
-function cleanupGateCodes() {
-  const db = loadDB();
-  const now = Date.now();
-  let changed = false;
-
-  for (const [code, v] of Object.entries(db.gateCodes || {})) {
-    if (!v || typeof v !== "object") {
-      delete db.gateCodes[code];
-      changed = true;
-      continue;
-    }
-    if (v.expiresAt <= now || v.used === true) {
-      // borro usados y expirados para no crecer db
-      delete db.gateCodes[code];
-      changed = true;
-    }
-  }
-
-  if (changed) saveDB(db);
-}
-
-/**
- * TEMPORAL: el bot publica y luego borra
- */
-async function openTemporal(hours) {
-  const db = loadDB();
-  const seconds = Math.max(1, Math.floor(hours * 3600));
-
-  const linkObj = await createInviteLink(TEMP_CHAT_ID, seconds);
-  const openUntil = Date.now() + seconds * 1000;
-
-  db.temp.openUntil = openUntil;
-  db.temp.inviteLink = linkObj.invite_link;
-  db.temp.postedMessageIds = [];
-  saveDB(db);
-
-  const m1 = await tg("sendMessage", { chat_id: TEMP_CHAT_ID, text: "Canal TEMPORAL abierto por tiempo limitado" });
-  const m2 = await tg("sendMessage", { chat_id: TEMP_CHAT_ID, text: "Muestra 1 (aqui luego pondremos su contenido)" });
-  const m3 = await tg("sendMessage", { chat_id: TEMP_CHAT_ID, text: "Para VIP escriba al bot: /vip" });
-
-  db.temp.postedMessageIds = [m1.message_id, m2.message_id, m3.message_id];
-  saveDB(db);
-
-  return { inviteLink: linkObj.invite_link, openUntil };
-}
-
-async function closeTemporal() {
-  const db = loadDB();
-
-  if (db.temp.inviteLink) {
-    try { await revokeInvite(TEMP_CHAT_ID, db.temp.inviteLink); } catch {}
-  }
-
-  for (const mid of db.temp.postedMessageIds || []) {
-    try { await tg("deleteMessage", { chat_id: TEMP_CHAT_ID, message_id: mid }); } catch {}
-  }
-
-  db.temp = { openUntil: 0, inviteLink: "", postedMessageIds: [] };
-  saveDB(db);
-
-  return true;
 }
 
 /**
@@ -409,7 +288,7 @@ async function handleCallbackQuery(cb) {
   }
 
   if (data === "back_home") {
-    return send(chatId, "Bienvenido\n\nOpciones:\n/temporal (ver estado)\n/vip (info VIP)\n/mi_vip (reenvia link si ya tiene VIP)\n\nSi ya pago: /ya_pague");
+    return send(chatId, "Bienvenido\n\nOpciones:\n/vip (info VIP)\n/mi_vip (reenvia link si ya tiene VIP)\n\nSi ya pago: /ya_pague");
   }
 }
 
@@ -496,21 +375,16 @@ async function handleSuccessfulPayment(msg) {
 }
 
 /**
- * botones pro para /start (estetico)
- * ✅ CAMBIO: el botón TEMPORAL ahora manda a su web con ads (AD_LANDING_URL)
+ * botones para /start
  */
 function startMenuMarkup() {
   if (!BOT_USERNAME) return {};
   const base = `https://t.me/${BOT_USERNAME}`;
-  const temporalUrl = AD_LANDING_URL ? AD_LANDING_URL : `${base}?start=temporal`;
 
   return {
     reply_markup: {
       inline_keyboard: [
-        [
-          { text: "🔥 Ver canal TEMPORAL", url: temporalUrl },
-          { text: "🔒 Acceso VIP 30 dias", url: `${base}?start=vip` }
-        ],
+        [{ text: "🔒 Acceso VIP 30 dias", url: `${base}?start=vip` }],
         [
           { text: "📌 Info VIP", url: `${base}?start=info` },
           { text: "✅ Mi VIP (reenviar link)", url: `${base}?start=mivip` }
@@ -525,23 +399,18 @@ function startWelcomeText() {
   return (
     "📁 Archivo Curioso 2.0\n" +
     "Bienvenido\n\n" +
-    "Aqui el contenido esta archivado para el deleite de tus ojos\n" +
-    "Todo se maneja por accesos\n\n" +
-    "🔥 CANAL TEMPORAL\n" +
-    "Se abre por tiempo limitado y de forma aleatoria\n" +
-    "Normalmente abre unas 2 horas\n" +
-    "Lo que vea ahi es una muestra\n" +
-    "Cuando se cumple el tiempo el contenido se borra automaticamente\n\n" +
+    "Aqui el contenido esta archivado para el deleite de tus ojos\n\n" +
     "🔒 CANAL VIP\n" +
-    "Esta abierto 24/7\n" +
-    "El contenido no se borra queda archivado completo\n\n" +
+    "Contenido full y exclusivo\n" +
+    "Actualizaciones diarias — se suben videos todos los dias\n" +
+    "Acceso 24/7, el contenido queda archivado y no se borra\n" +
+    "Solo los miembros VIP tienen acceso a este canal\n\n" +
     "Elija una opcion aqui abajo"
   );
 }
 
 /**
  * ✅ crea/edita POST FIJO en HUB y lo fija
- * ✅ CAMBIO: en vez de soltar link directo, manda AD_LANDING_URL
  */
 async function upsertHubPinnedPost() {
   if (!HUB_CHAT_ID) throw new Error("HUB_CHAT_ID no configurado");
@@ -549,21 +418,19 @@ async function upsertHubPinnedPost() {
 
   const db = loadDB();
   const botBase = `https://t.me/${BOT_USERNAME}`;
-  const temporalUrl = AD_LANDING_URL ? AD_LANDING_URL : `${botBase}?start=temporal`;
 
   const texto =
     "📁 Archivo Curioso 2.0\n\n" +
-    "🔥 Canal TEMPORAL\n" +
-    "Se abre por tiempo limitado con muestras\n" +
-    "Para entrar pase por el acceso aqui abajo\n\n" +
     "🔒 Canal VIP\n" +
-    "Acceso 24/7\n\n" +
+    "Contenido full y exclusivo\n" +
+    "Videos nuevos subidos diariamente\n" +
+    "Acceso 24/7 — el contenido no se borra, queda archivado\n" +
+    "Solo miembros VIP tienen acceso\n\n" +
     "Elija una opcion abajo";
 
   const markup = {
     reply_markup: {
       inline_keyboard: [
-        [{ text: "🔥 Entrar al TEMPORAL", url: temporalUrl }],
         [{ text: "🔒 Desbloquear VIP 30 dias", url: `${botBase}?start=vip` }],
         [{ text: "✅ Mi VIP (reenviar link)", url: `${botBase}?start=mivip` }]
       ]
@@ -661,57 +528,19 @@ async function handleMessage(msg) {
     const parts = text.split(/\s+/);
     const arg = (parts[1] || "").toLowerCase();
 
-    // ✅ NUEVO: si vienen desde /go-temporal con un code
-    if (arg.startsWith("gate_")) {
-      const code = arg.replace("gate_", "").trim();
-
-      const r = consumeGateCode(code);
-      if (!r.ok) {
-        return send(chatId, "Acceso invalido o vencido\nVuelva a entrar desde el enlace del canal");
-      }
-
-      const db = loadDB();
-      if (db.temp.openUntil && db.temp.openUntil > Date.now()) {
-        return send(
-          chatId,
-          "🔥 TEMPORAL ABIERTO\n\nAqui su acceso:\n" +
-            db.temp.inviteLink +
-            "\n\nCierra en: " +
-            fmtMs(db.temp.openUntil - Date.now()),
-          startMenuMarkup()
-        );
-      }
-
-      return send(chatId, "🔥 TEMPORAL CERRADO\nVuelva mas tarde", startMenuMarkup());
-    }
-
     if (arg === "vip") {
       return send(chatId, "🔒 VIP 30 dias\n\nElija un metodo de pago:", vipMenuMarkup(false));
-    }
-
-    // ✅ CAMBIO: /start temporal YA NO da link, manda a publicidad
-    if (arg === "temporal") {
-      if (!AD_LANDING_URL) {
-        return send(
-          chatId,
-          "Temporal disponible solo desde el enlace del canal\n(AD_LANDING_URL no configurado)",
-          startMenuMarkup()
-        );
-      }
-      return send(
-        chatId,
-        "🔥 Para entrar al TEMPORAL primero pase por el acceso aqui:\n" + AD_LANDING_URL + "\n\nLuego toque el boton ENTRAR en esa pagina",
-        startMenuMarkup()
-      );
     }
 
     if (arg === "info") {
       return send(
         chatId,
         "📌 INFO VIP\n\n" +
-          "VIP esta abierto 24/7\n" +
-          "Contenido completo sin borrarse\n\n" +
-          "Para comprar toque VIP y pague con Stars o USDT",
+          "El Canal VIP es contenido full y exclusivo\n" +
+          "Se suben videos diariamente\n" +
+          "Acceso 24/7, el contenido queda archivado\n" +
+          "Solo miembros VIP tienen acceso\n\n" +
+          "Para unirse toque VIP y pague con Stars o USDT",
         startMenuMarkup()
       );
     }
@@ -753,7 +582,7 @@ async function handleMessage(msg) {
     if (!BOT_USERNAME) {
       return send(
         chatId,
-        startWelcomeText() + "\n\n⚠️ Falta BOT_USERNAME en Render para mostrar botones\nPor ahora use /vip o /temporal",
+        startWelcomeText() + "\n\n⚠️ Falta BOT_USERNAME en Render para mostrar botones\nPor ahora use /vip",
         {}
       );
     }
@@ -787,18 +616,6 @@ async function handleMessage(msg) {
     return send(chatId, "Listo ya avise al administrador\napenas apruebe le llegara su link VIP");
   }
 
-  // ✅ CAMBIO: /temporal ahora manda a la web con ads (no suelta el link directo)
-  if (text === "/temporal") {
-    const db = loadDB();
-    if (!db.temp.openUntil || db.temp.openUntil <= Date.now()) {
-      return send(chatId, "Temporal CERRADO\nVuelva mas tarde");
-    }
-    if (!AD_LANDING_URL) {
-      return send(chatId, "Temporal ABIERTO\nPero falta AD_LANDING_URL en Render");
-    }
-    return send(chatId, "Temporal ABIERTO ✅\n\nPara entrar pase por:\n" + AD_LANDING_URL + "\n\ny toque ENTRAR en esa pagina");
-  }
-
   if (text === "/post_fijo") {
     if (!isAdmin(userId)) return send(chatId, "No autorizado");
     if (!HUB_CHAT_ID) return send(chatId, "HUB_CHAT_ID no configurado en Render");
@@ -816,52 +633,6 @@ async function handleMessage(msg) {
           (e?.message || e)
       );
     }
-  }
-
-  if (text.startsWith("/abrir_temporal")) {
-    if (!isAdmin(userId)) return send(chatId, "No autorizado");
-    const parts = text.split(/\s+/);
-    const raw = parts[1] || "2h";
-    let hours = 2;
-
-    if (raw.endsWith("h")) hours = Number(raw.replace("h", ""));
-    else if (raw.endsWith("m")) hours = Number(raw.replace("m", "")) / 60;
-    else hours = Number(raw);
-
-    if (!Number.isFinite(hours) || hours <= 0) hours = 2;
-
-    await openTemporal(hours);
-
-    // ✅ CAMBIO: avisar en HUB con link a publicidad, NO link directo
-    if (HUB_CHAT_ID) {
-      if (AD_LANDING_URL) {
-        await send(
-          HUB_CHAT_ID,
-          "🔥 TEMPORAL ABIERTO por " + hours + "h\n\nPara entrar toque abajo (pasa por acceso):",
-          { reply_markup: { inline_keyboard: [[{ text: "Entrar al TEMPORAL 🔥", url: AD_LANDING_URL }]] } }
-        );
-      } else {
-        // fallback (si no configuro AD_LANDING_URL)
-        const botUrl = BOT_USERNAME ? `https://t.me/${BOT_USERNAME}?start=temporal` : null;
-        if (botUrl) {
-          await send(
-            HUB_CHAT_ID,
-            "🔥 TEMPORAL ABIERTO por " + hours + "h\n\nToque aqui:",
-            { reply_markup: { inline_keyboard: [[{ text: "Ver TEMPORAL", url: botUrl }]] } }
-          );
-        } else {
-          await send(HUB_CHAT_ID, "🔥 TEMPORAL ABIERTO por " + hours + "h\n\nEscriba /temporal al bot");
-        }
-      }
-    }
-
-    return send(chatId, "Temporal ABIERTO ✅\nDuracion: " + hours + "h\n(En el HUB ya se aviso con el acceso)");
-  }
-
-  if (text === "/cerrar_temporal") {
-    if (!isAdmin(userId)) return send(chatId, "No autorizado");
-    await closeTemporal();
-    return send(chatId, "Temporal cerrado y contenido borrado");
   }
 
   if (text.startsWith("/aprobar")) {
@@ -909,24 +680,6 @@ async function handleMessage(msg) {
     return send(chatId, `📋 VIP activos: ${entries.length}\n\n` + lines.join("\n\n"));
   }
 }
-
-/**
- * ✅ NUEVO ENDPOINT:
- * Su web con ads pone un botón que llama a: https://SU_WEBHOOK_URL/go-temporal
- * Eso genera código 1-uso y redirige al bot con /start gate_CODE
- */
-app.get("/go-temporal", (req, res) => {
-  try {
-    if (!WEBHOOK_URL) return res.status(500).send("WEBHOOK_URL no configurado");
-    if (!BOT_USERNAME) return res.status(500).send("BOT_USERNAME no configurado");
-
-    const code = addGateCode(10 * 60); // 10 min
-    const tgUrl = `https://t.me/${BOT_USERNAME}?start=gate_${code}`;
-    return res.redirect(302, tgUrl);
-  } catch (e) {
-    return res.status(500).send("Error: " + (e?.message || e));
-  }
-});
 
 // WEBHOOK endpoint
 app.post(`/webhook/${BOT_TOKEN}`, async (req, res) => {
@@ -993,18 +746,6 @@ app.listen(PORT, async () => {
       console.error("renewalCheck error:", e);
     }
   }, 30 * 60 * 1000); // revisa cada 30 min
-
-  setInterval(async () => {
-    const db = loadDB();
-    if (db.temp.openUntil && db.temp.openUntil <= Date.now()) {
-      await closeTemporal().catch(console.error);
-    }
-  }, 60 * 1000);
-
-  // limpia códigos gate cada 2 min
-  setInterval(() => {
-    cleanupGateCodes();
-  }, 2 * 60 * 1000);
 
   if (WEBHOOK_URL) {
     const url = `${WEBHOOK_URL}/webhook/${BOT_TOKEN}`;
